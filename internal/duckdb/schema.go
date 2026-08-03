@@ -2,7 +2,9 @@ package duckdb
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -20,7 +22,8 @@ import (
 // migrations between versions. A version mismatch means the mirror file
 // must be rebuilt with 'agentsview duckdb push --full'. v12 adds the 1h
 // cache-write rate columns, v13 adds row-level provider identity, and v14
-// adds the canonical Bun physical keys.
+// combines the raw GenAI pricing document, canonical Bun physical keys, and
+// an opaque mirror generation token for coherent multi-query Quack reads.
 const SchemaVersion = 14
 
 const schemaVersionMetadataKey = "agentsview_schema_version"
@@ -38,6 +41,7 @@ const (
 	deletionRevisionMetadataKey = "agentsview_session_deletion_revision"
 	identityRevisionMetadataKey = "agentsview_project_identity_revision"
 	mappingRevisionMetadataKey  = "agentsview_worktree_mapping_revision"
+	mirrorGenerationMetadataKey = "agentsview_mirror_generation"
 )
 
 // curationFingerprintMetadataKey stores a hash of the local in-scope
@@ -196,6 +200,10 @@ type mirrorMetadata struct {
 
 // writeMirrorMetadata upserts every mirrorMetadata field into sync_metadata.
 func writeMirrorMetadata(ctx context.Context, db *sql.DB, meta mirrorMetadata) error {
+	generation, err := newMirrorGenerationToken()
+	if err != nil {
+		return err
+	}
 	fields := []struct {
 		key   string
 		value string
@@ -211,6 +219,9 @@ func writeMirrorMetadata(ctx context.Context, db *sql.DB, meta mirrorMetadata) e
 		{deletionRevisionMetadataKey, strconv.FormatInt(meta.DeletionRevision, 10)},
 		{identityRevisionMetadataKey, strconv.FormatInt(meta.IdentityRevision, 10)},
 		{mappingRevisionMetadataKey, strconv.FormatInt(meta.MappingRevision, 10)},
+		// Publish the opaque generation last: readers retain the previous token
+		// until every descriptive metadata field has been finalized.
+		{mirrorGenerationMetadataKey, generation},
 	}
 	for _, field := range fields {
 		if err := recordMetadataKey(ctx, db, field.key, field.value); err != nil {
@@ -218,6 +229,14 @@ func writeMirrorMetadata(ctx context.Context, db *sql.DB, meta mirrorMetadata) e
 		}
 	}
 	return nil
+}
+
+func newMirrorGenerationToken() (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("generating duckdb mirror generation: %w", err)
+	}
+	return hex.EncodeToString(nonce[:]), nil
 }
 
 // readMirrorMetadata reads mirrorMetadata back from sync_metadata. Missing
