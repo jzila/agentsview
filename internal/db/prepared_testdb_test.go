@@ -46,6 +46,7 @@ func OpenPreparedTestDB(path string) (*DB, error) {
 			"generating prepared test cursor secret: %w", err,
 		)
 	}
+	db.BunStore.SetCursorSecret(db.cursorSecret)
 
 	db.startWALCheckpointLoop()
 	return db, nil
