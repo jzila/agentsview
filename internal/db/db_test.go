@@ -1117,6 +1117,11 @@ func TestCurrentDataVersionCursorTurnTimestamps(t *testing.T) {
 		"Cursor turn timestamps require re-parsing existing sessions")
 }
 
+func TestCurrentDataVersionCanonicalTimestamps(t *testing.T) {
+	assert.Equal(t, 97, CurrentDataVersion(),
+		"canonical timestamp repair requires a sequential backfill")
+}
+
 func TestInsertMessages_PreservesToolResultEvents(t *testing.T) {
 	d := testDB(t)
 	insertSession(t, d, "s-events", "proj")
