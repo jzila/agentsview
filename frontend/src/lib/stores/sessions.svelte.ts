@@ -1572,6 +1572,7 @@ function sidebarIndexRowToSession(row: SidebarSessionIndexRow, existing?: Sessio
   const skinny: Session = {
     id: row.id,
     project: row.project,
+    project_assigned: row.project_assigned ?? false,
     machine: row.machine,
     agent: row.agent,
     agent_label: row.agent_label ?? undefined,
@@ -1600,6 +1601,7 @@ function sidebarIndexRowToSession(row: SidebarSessionIndexRow, existing?: Sessio
     ...skinny,
     ...existing,
     project: skinny.project,
+    project_assigned: skinny.project_assigned,
     machine: skinny.machine,
     agent: skinny.agent,
     agent_label: skinny.agent_label,
