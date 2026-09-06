@@ -579,6 +579,7 @@ func (capability sqliteFullTextCapability) SearchContent(
 	where, scopeArgs := buildBunSessionFilter(
 		contentSessionFilter(filter), sqliteTimestampOrderExpr,
 	)
+	where, scopeArgs = AppendExcludeSessionIDs(where, scopeArgs, "session.id", filter.ExcludeSessionIDs)
 	system := "1=1"
 	if filter.ExcludeSystem {
 		system = "message.is_system = FALSE AND " +
@@ -616,6 +617,7 @@ func (capability sqliteFullTextCapability) SearchHybridContent(
 	where, scopeArgs := buildBunSessionBaseFilter(
 		semanticContentSessionFilter(filter), sqliteTimestampOrderExpr,
 	)
+	where, scopeArgs = AppendExcludeSessionIDs(where, scopeArgs, "session.id", filter.ExcludeSessionIDs)
 	query := `SELECT message.session_id, message.ordinal,
 		'message' AS location, '' AS tool_name,
 		snippet(messages_fts, 0, '', '', '...', 32) AS body,
