@@ -20,7 +20,7 @@ func init() {
 				return err
 			}
 			if err := conn.RegisterFunc(
-				"agentsview_local_timestamp", sqliteLocalTimestamp, true,
+				"agentsview_local_timestamp", new(sqliteLocalTimeConverter).convert, true,
 			); err != nil {
 				return err
 			}
@@ -48,7 +48,14 @@ func sqliteTimestampUnixMicro(raw string) any {
 	return timestamp.UTC().UnixMicro()
 }
 
-func sqliteLocalTimestamp(value any, timezone string) any {
+// database/sql serializes use of each connection. Retain only its last zone,
+// so an analytics scan does not reload the same timezone file for every row.
+type sqliteLocalTimeConverter struct {
+	zone     string
+	location *time.Location
+}
+
+func (c *sqliteLocalTimeConverter) convert(value any, timezone string) any {
 	text, ok := value.(string)
 	if !ok || text == "" {
 		return nil
@@ -57,11 +64,14 @@ func sqliteLocalTimestamp(value any, timezone string) any {
 	if err != nil {
 		return nil
 	}
-	location, err := time.LoadLocation(timezone)
-	if err != nil {
-		return nil
+	if c.location == nil || c.zone != timezone {
+		location, err := time.LoadLocation(timezone)
+		if err != nil {
+			return nil
+		}
+		c.zone, c.location = timezone, location
 	}
-	return parsed.In(location).Format("2006-01-02 15:04:05.999999999")
+	return parsed.In(c.location).Format("2006-01-02 15:04:05.999999999")
 }
 
 func sqliteUsageOutputTokens(tokenJSON string) int {
