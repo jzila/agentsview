@@ -7,8 +7,10 @@ import type {
   DataProjectRulesResponse,
   DbCompactResult,
   DbProjectInventory,
+  DbSessionPage,
   GetApiV1DataProjectReclassificationCandidatesParams,
   GetApiV1DataProjectRulesParams,
+  GetApiV1DataProjectsByProjectKeySessionsPathParameters,
 } from "../models";
 
 import { orvalFetch } from "../../runtime.ts";
@@ -114,6 +116,25 @@ export const getApiV1DataProjects = async (
   options?: Parameters<typeof orvalFetch>[1],
 ): Promise<DbProjectInventory> => {
   return orvalFetch<DbProjectInventory>(getGetApiV1DataProjectsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetApiV1DataProjectsByProjectKeySessionsUrl = ({
+  projectKey,
+}: GetApiV1DataProjectsByProjectKeySessionsPathParameters) => {
+  return `/api/v1/data/projects/${encodeURIComponent(String(projectKey))}/sessions`;
+};
+
+/**
+ * @summary List sessions for an opaque project identity
+ */
+export const getApiV1DataProjectsByProjectKeySessions = async (
+  { projectKey }: GetApiV1DataProjectsByProjectKeySessionsPathParameters,
+  options?: Parameters<typeof orvalFetch>[1],
+): Promise<DbSessionPage> => {
+  return orvalFetch<DbSessionPage>(getGetApiV1DataProjectsByProjectKeySessionsUrl({ projectKey }), {
     ...options,
     method: "GET",
   });
