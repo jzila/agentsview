@@ -93,6 +93,10 @@ not an archive or a mirror and is removed after the import.
 - Write Bun placeholders (`?` or indexed `?0`, `?1`, and so on) in every query
   executed through Bun. Never pass driver-native placeholders such as
   PostgreSQL `$1`; Bun must format values for the active dialect.
+- SQLite handles use the archive dialect's string formatter so internal NUL
+  separators survive SQL literal formatting. Bun's default formatter removes
+  them. Preserve cache identities with a blob-to-text literal; do not change
+  provider-content sanitization to accommodate internal keys.
 - Escape a literal question mark as `\?` so Bun does not consume it as a
   placeholder. Use indexed placeholders when one argument is referenced more
   than once.
