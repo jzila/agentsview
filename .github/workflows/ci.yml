@@ -294,6 +294,9 @@ jobs:
           exit $LASTEXITCODE
         env:
           CGO_ENABLED: "1"
+          # SYSTEM otherwise uses C:\Windows\SystemTemp, whose ancestors do
+          # not satisfy the capture tests' parent-directory permission checks.
+          SystemTemp: ${{ runner.temp }}
 
       - name: Summarize ${{ matrix.name }} test timing
         if: always()
