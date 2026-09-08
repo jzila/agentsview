@@ -286,6 +286,20 @@ jobs:
       - name: Restore pricing snapshot
         run: go run ./internal/pricing/cmd/litellm-snapshot -restore
 
+      # The Windows system tree and the runner's data volume have parent
+      # permissions that capture deliberately rejects. Use a private directory
+      # directly on the system drive for this job's fixtures.
+      - name: Prepare capture test temporary directory
+        if: matrix.name == 'Capture'
+        shell: pwsh
+        run: |
+          $testTemp = Join-Path $env:SystemDrive ("agentsview-ci-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $testTemp | Out-Null
+          icacls $testTemp /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "SystemTemp=$testTemp" >> $env:GITHUB_ENV
+          "AGENTSVIEW_CI_TEMP=$testTemp" >> $env:GITHUB_ENV
+
       - name: Run ${{ matrix.name }} tests
         shell: pwsh
         run: |
@@ -294,9 +308,11 @@ jobs:
           exit $LASTEXITCODE
         env:
           CGO_ENABLED: "1"
-          # SYSTEM otherwise uses C:\Windows\SystemTemp, whose ancestors do
-          # not satisfy the capture tests' parent-directory permission checks.
-          SystemTemp: ${{ runner.temp }}
+
+      - name: Remove capture test temporary directory
+        if: always() && matrix.name == 'Capture' && env.AGENTSVIEW_CI_TEMP != ''
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:AGENTSVIEW_CI_TEMP -Recurse -Force
 
       - name: Summarize ${{ matrix.name }} test timing
         if: always()
