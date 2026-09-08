@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -325,8 +326,13 @@ func TestDevinProviderFingerprintChangesWhenTranscriptChangesWithoutDBMetadataCh
 
 func TestDevinProviderFingerprintChangesWhenLastActivityChanges(t *testing.T) {
 	const sessionID = "session-last-activity"
-	dbPath, _ := newDevinSessionFixture(t, devinSessionRow{ID: sessionID, Title: "DB change", WorkingDirectory: "/tmp/app", Model: "db-model", CreatedAt: new(int64(1704103200)), LastActivityAt: new(int64(1704103209))}, `{"steps":[]}`)
+	dbPath, transcriptPath := newDevinSessionFixture(t, devinSessionRow{ID: sessionID, Title: "DB change", WorkingDirectory: "/tmp/app", Model: "db-model", CreatedAt: new(int64(1704103200)), LastActivityAt: new(int64(1704103209))}, `{"steps":[]}`)
 	root := filepath.Dir(filepath.Dir(dbPath))
+	// Keep filesystem timestamps older than the session activity so the
+	// fingerprint change measures metadata, independent of filesystem timing.
+	fileTime := time.Unix(1704103200, 0)
+	require.NoError(t, os.Chtimes(dbPath, fileTime, fileTime))
+	require.NoError(t, os.Chtimes(transcriptPath, fileTime, fileTime))
 
 	provider, ok := NewProvider(AgentDevin, ProviderConfig{Roots: []string{root}})
 	require.True(t, ok)
@@ -339,12 +345,14 @@ func TestDevinProviderFingerprintChangesWhenLastActivityChanges(t *testing.T) {
 	require.NoError(t, err)
 
 	execDevinTestSQL(t, dbPath, `UPDATE sessions SET last_activity_at = 1704103215 WHERE id = 'session-last-activity'`)
+	require.NoError(t, os.Chtimes(dbPath, fileTime, fileTime))
 
 	after, err := provider.Fingerprint(context.Background(), source)
 	require.NoError(t, err)
 
 	assert.Equal(t, before.Key, after.Key)
-	assert.Greater(t, after.MTimeNS, before.MTimeNS)
+	assert.Equal(t, int64(1704103209000000000), before.MTimeNS)
+	assert.Equal(t, int64(1704103215000000000), after.MTimeNS)
 	assert.NotEqual(t, before.Hash, after.Hash)
 }
 
