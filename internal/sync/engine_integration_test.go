@@ -2710,7 +2710,9 @@ func TestReconcileWatchRootsBoundsDiscoveryPagesAcrossArchiveCardinality(t *test
 			assert.Equal(t, tc.wantMaxPage, result.Metrics.MaxSpoolPageRows)
 			assert.Equal(t, tc.wantMaxPage, result.Metrics.MaxRehydratedSources)
 			assert.Equal(t, tc.wantProviderBuffer, result.Metrics.MaxProviderBuffered)
-			assert.LessOrEqual(t, result.Metrics.MaxWorkerResults, 24)
+			// Up to 8 senders, 16 buffered results, and one received result
+			// awaiting the collector's metric decrement can be counted at once.
+			assert.LessOrEqual(t, result.Metrics.MaxWorkerResults, 25)
 			assert.LessOrEqual(t, result.Metrics.MaxPendingWrites, 100)
 			assert.Positive(t, result.Metrics.MaxWorkerResults)
 			assert.Positive(t, result.Metrics.MaxPendingWrites)
@@ -2821,7 +2823,9 @@ func TestColdArchiveChangedPathAndReconciliationAreCardinalityBounded(t *testing
 			assert.LessOrEqual(t, result.Metrics.MaxSpoolPageRows, 256)
 			assert.LessOrEqual(t, result.Metrics.MaxProviderBuffered, 64)
 			assert.LessOrEqual(t, result.Metrics.MaxRehydratedSources, 256)
-			assert.LessOrEqual(t, result.Metrics.MaxWorkerResults, 24)
+			// Up to 8 senders, 16 buffered results, and one received result
+			// awaiting the collector's metric decrement can be counted at once.
+			assert.LessOrEqual(t, result.Metrics.MaxWorkerResults, 25)
 			assert.LessOrEqual(t, result.Metrics.MaxPendingWrites, 100)
 			assert.Equal(t, 1, result.Metrics.GlobalLinkPasses)
 			assert.Equal(t,
