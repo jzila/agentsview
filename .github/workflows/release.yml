@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - goarch: amd64
-            runner: ubuntu-latest
+            runner: namespace-profile-linux-16cpu
             container: quay.io/pypa/manylinux_2_28_x86_64@sha256:853663dc8253b62be437bb52a5caecffd020792af4442f55d927d22e0ea795ae
           - goarch: arm64
             runner: ubuntu-24.04-arm
@@ -121,7 +121,7 @@ jobs:
           - os: macos-15
             goos: darwin
             goarch: arm64
-          - os: windows-latest
+          - os: namespace-profile-windows-amd64
             goos: windows
             goarch: amd64
           - os: windows-11-vs2026-arm
@@ -255,7 +255,7 @@ jobs:
 
   release:
     needs: [build-linux, build]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-16cpu
     permissions:
       contents: write
     steps:
@@ -310,7 +310,7 @@ jobs:
 
   pypi:
     needs: [build-linux, build, release]
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-16cpu
     environment: pypi
     permissions:
       contents: read

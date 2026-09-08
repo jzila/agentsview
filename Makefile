@@ -315,11 +315,9 @@ bench-backends: pricing-snapshot ensure-embed-dir
 
 # Hot-path benchmark gate. Runs every benchmark in the gated packages
 # (sync engine warm/cold/append, message write paths, usage
-# aggregation, secret scanning, signal analysis). This target is the
-# single source of truth for the gate configuration: CI's bench.yml
-# runs it on both the PR head and the merge base, then compares the
-# outputs with `go run ./cmd/benchgate -old old.txt -new new.txt`.
-# Run it before and after touching a gated hot path.
+# aggregation, secret scanning, signal analysis). For a local comparison,
+# run this target before and after a change, then compare the outputs with
+# `go run ./cmd/benchgate -old old.txt -new new.txt`.
 BENCH_GATE_PACKAGES ?= ./internal/sync ./internal/db ./internal/secrets \
 	./internal/signals
 # Count must stay >= 5: benchgate's time gate needs at least 5

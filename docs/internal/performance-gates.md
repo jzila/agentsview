@@ -2,9 +2,9 @@
 
 agentsview has repeatedly shipped performance regressions where sync work
 stopped scaling with *new data* and started scaling with *archive size*. This
-document records the regression classes we have actually hit, and the gates that
-now guard each one. When you touch a sync or DB hot path, know which gate covers
-you; when you fix a new class of regression, add a gate here.
+document records the regression classes we have actually hit, the deterministic
+tests that guard them, and optional local benchmark comparisons. Benchmark
+ratios no longer block pull requests.
 
 The watcher scheduler, bounded watcher batches, and Codex continuation cursor
 contracts are documented in
@@ -22,7 +22,7 @@ contracts are documented in
 | Per-row query shape            | `GetDailyUsage` ran 1.2M `json_extract` calls per scan and had no date pushdown.                                                                                                                        | #309                                           |
 | Usage archive scaling          | Normalized facts removed JSON parsing but warm requests still ranked and priced hundreds of thousands of rows instead of reading daily aggregates.                                                      | Usage aggregate cache                          |
 
-## Two layers of gates
+## Automated invariants and local benchmarks
 
 ### 1. Deterministic work-count invariants (run in `make test`)
 
@@ -68,12 +68,11 @@ reuse a counter (`SyncStats`, `PhaseStats`, `AnomalyStats`, a swappable
 package-var seam) and assert the invariant, e.g. "second sync parses zero
 sessions" or "the manifest is read once per root regardless of session count".
 
-### 2. Benchmark gate (runs on every PR via `bench.yml`)
+### 2. Optional local benchmark comparisons
 
-`.github/workflows/bench.yml` runs `make bench-gate` — the single source of
-truth for the gated package list, sample count, and per-tier iteration counts —
-on the PR head and its merge base on the same runner, then compares the outputs
-with `cmd/benchgate`:
+The benchmark gate workflows have been removed. The `make bench-gate` target and
+`cmd/benchgate` remain available for local comparisons. The target defines the
+package list, sample count, and per-tier iteration counts for these benchmarks:
 
 - `BenchmarkSyncAllWarmNoop` — full sync over an already-synced archive (stat +
   skip work only; also self-asserts nothing is re-synced or bulk-rewritten).
@@ -116,14 +115,14 @@ with `cmd/benchgate`:
 `benchmath` — the statistics engine behind `benchstat` — summarizes samples and
 tests significance (Mann-Whitney U). benchgate adds only the policy benchstat
 does not provide: thresholds, floors, and a failing exit code. Gating is per
-benchmark — any single benchmark over its threshold fails the PR; nothing is
-averaged across benchmarks. It gates hard on `allocs/op` (limit 1.25x), which is
-deterministic for the same code and iteration count — an
+benchmark — any single benchmark over its threshold fails the comparison.
+Nothing is averaged across benchmarks. It gates hard on `allocs/op` (limit
+1.25x), which is deterministic for the same code and iteration count — an
 O(archive)-instead-of-O(delta) regression always blows it up. It compares the
 candidate's *worst* `-count` run against the baseline median, so even an
 intermittent extra-allocation path fails. That is intentionally asymmetric: the
 baseline is treated as the historical reference, and candidate instability is
-what blocks the PR (failure lines include the baseline's worst run so
+what fails the comparison (failure lines include the baseline's worst run so
 pre-existing instability is visible). `B/op` keeps a tight 1.35x limit but
 compares medians and must be a statistically significant difference before it
 fails. Allocated bytes are not deterministic once the code under test reuses
@@ -133,15 +132,15 @@ buffer depends on which processor the goroutine lands on. The recall evidence
 window benchmarks showed this in CI with identical code, spreading `B/op` from
 3.6 to 7.9 MiB across five runs while `allocs/op` moved by under one percent.
 Time (`sec/op`) compares medians with a loose 2.0x limit and the same
-significance requirement, so a single slow run on a noisy runner cannot flake a
-PR but algorithmic blowups still do. Significance gating requires at least 5
-candidate samples; fewer is reported as a configuration error (the candidate run
-is under the workflow's control), while a baseline with fewer than 5 samples — a
-legitimately partial base run — is reported and not gated. Baselines below a
-per-metric floor are not gated. Benchmarks that exist on only one side are
-reported but never fail, so adding or removing benchmarks cannot wedge a PR.
-Only `allocs/op`, `B/op`, and `sec/op` are gated: custom `b.ReportMetric` units
-are collected and reported as ungated, never enforced.
+significance requirement, so a single slow run on a noisy runner cannot fail a
+comparison but algorithmic blowups still do. Significance gating requires at
+least 5 candidate samples; fewer is reported as a configuration error (the
+candidate run is under the caller's control), while a baseline with fewer than 5
+samples — a legitimately partial base run — is reported and not gated. Baselines
+below a per-metric floor are not gated. Benchmarks that exist on only one side
+are reported but never fail, so adding or removing benchmarks cannot fail a
+comparison. Only `allocs/op`, `B/op`, and `sec/op` are gated: custom
+`b.ReportMetric` units are collected and reported as ungated, never enforced.
 
 Two failure modes are treated as loud configuration errors (exit 2) rather than
 silent gaps: a capture whose result lines fail to parse, and a gated unit
@@ -172,11 +171,10 @@ other benchmark runs with `BENCH_GATE_TIME`. Per-op ratios at that scale do not
 need the averaging that millisecond-scale samples do, and at the full iteration
 count those few benchmarks were most of the gate's wall clock.
 `BENCH_GATE_COUNT` samples are taken per benchmark, and every sample rebuilds
-the fixture, so the count is kept at benchgate's significance minimum. CI
-evaluates `make bench-gate-config` on the PR head and passes the count, both
-iteration counts, and the heavy-tier regex into the merge-base run, so a PR that
-changes those defaults still compares identical workloads; do the same locally
-if you override them.
+the fixture, so the count is kept at benchgate's significance minimum. Use
+`make bench-gate-config` to obtain the count, both iteration counts, and the
+heavy-tier regex. Pass the same values into both runs when defaults differ
+between revisions or when you override them.
 
 Report identifiers are package-qualified benchmark names
 (`go.kenn.io/agentsview/internal/db.InsertMessagesBatch-18`) when the captured
@@ -184,8 +182,8 @@ output carries `pkg:` metadata, falling back to the bare name when it does not
 (e.g. hand-trimmed captures). Do not mix captures with and without `pkg:` lines:
 the same benchmark would key differently and be treated as removed/new.
 
-Run locally, comparing your working tree against a baseline commit. Like CI, use
-a worktree for the baseline — checking out or stashing in place can leave
+Run locally, comparing your working tree against a baseline commit. Use a
+worktree for the baseline — checking out or stashing in place can leave
 candidate files (or your commits) in the baseline run:
 
 ```bash
@@ -197,14 +195,14 @@ go run ./cmd/benchgate -old old.txt -new new.txt
 ```
 
 Cross-backend query benchmarks live separately in `internal/backendbench`
-(`make bench-backends`, requires Docker) and are not part of the PR gate.
+(`make bench-backends`, requires Docker) and are not part of `make bench-gate`.
 
 ## Usage aggregate release gates
 
-CI uses fixture-based work invariants and benchmark ratios. Machine-specific
-targets are manual release gates on the protected production-scale clone. Run
-them after cache statistics maintenance so planner state does not exaggerate the
-aggregate tier's benefit.
+CI uses fixture-based work invariants. Machine-specific targets are manual
+release gates on the protected production-scale clone. Run them after cache
+statistics maintenance so planner state does not exaggerate the aggregate tier's
+benefit.
 
 - Complete warm 30-day CLI result: at most two seconds.
 - Warm in-process 30-day result: target 1.5 seconds.
@@ -220,15 +218,15 @@ The detailed architecture and oracle requirements are in
 [Usage Aggregate Cache](usage-aggregate-cache.md).
 
 `BenchmarkCodexIncrementalCursor` lives in `internal/parser` and compares cold
-prefix reconstruction with an exact warm cursor. It is diagnostic rather than
-PR-gated: `BENCH_GATE_PACKAGES` currently contains `./internal/sync`,
+prefix reconstruction with an exact warm cursor. It is outside the local
+comparison target: `BENCH_GATE_PACKAGES` currently contains `./internal/sync`,
 `./internal/db`, `./internal/secrets`, and `./internal/signals`.
 
-## Adding a benchmark to the gate
+## Adding a benchmark to local comparisons
 
-Every benchmark in a gated package is gated — there is no per-name allowlist to
-maintain. A benchmark added by a PR has no baseline, so its first run is
-reported without gating; it gates automatically once merged.
+The local comparison includes every benchmark in the selected packages. A
+benchmark present in only one revision has no baseline and is reported without a
+threshold check.
 
 1. Write the benchmark next to the code it guards (`*_bench_test.go`,
    `b.ReportAllocs()`, self-assert the invariant it protects where possible).
@@ -239,9 +237,8 @@ reported without gating; it gates automatically once merged.
    it.
 1. If its package is not already gated, add it to `BENCH_GATE_PACKAGES` in the
    Makefile — a benchmark outside the gated packages silently never runs, so
-   it looks gated while measuring nothing. CI picks the list up from the
-   Makefile; each side of the comparison benchmarks its own commit's list, so
-   growing the gate cannot break the base run.
+   it looks included while measuring nothing. Each side of a local comparison
+   uses its own commit's package list.
 1. Keep per-op cost roughly in the 100µs–100ms band: below the benchgate floors
    nothing is gated, and far above it the job gets slow. A benchmark that
    needs a large fixture to expose per-row scaling belongs in
