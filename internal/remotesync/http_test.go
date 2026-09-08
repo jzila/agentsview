@@ -502,7 +502,7 @@ func TestHTTPSyncLegacyRetainsSpoolWhenExtractionRootCreationFails(t *testing.T)
 		URL:  ts.URL,
 		Progress: func(p syncpkg.Progress) {
 			if p.BytesDone == int64(len(archive)) {
-				for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+				for _, name := range []string{"TMPDIR", "TMP", "TEMP", "SystemTemp"} {
 					require.NoError(t, os.Setenv(name, invalidTemp))
 				}
 			}
@@ -4213,7 +4213,8 @@ func tarWithoutEndMarker(t *testing.T, name, body string) []byte {
 
 func setPortableTempDir(t *testing.T, dir string) {
 	t.Helper()
-	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+	// Windows GetTempPath2 uses SystemTemp for processes running as SYSTEM.
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP", "SystemTemp"} {
 		t.Setenv(name, dir)
 	}
 }
