@@ -636,7 +636,7 @@ func openUsageCacheDatabase(path string) (*bun.DB, error) {
 		_ = database.Close()
 		return nil, fmt.Errorf("opening usage cache %s: %w", path, err)
 	}
-	return bun.NewDB(database, newSQLiteArchiveDialect()), nil
+	return bun.NewDB(database, NewSQLiteArchiveDialect()), nil
 }
 
 func probeUsageCache(ctx context.Context, path string) usageCacheProbe {
