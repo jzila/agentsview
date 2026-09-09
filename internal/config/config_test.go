@@ -1910,6 +1910,87 @@ func TestLoadResolvesLocalMachineNameFromHostname(t *testing.T) {
 	assert.Equal(t, hostname, cfg.LocalMachineName)
 }
 
+func TestMachineNameSurvivesHostnameChanges(t *testing.T) {
+	dir := setupTestEnv(t)
+	for _, hostname := range []string{"host-a.local", "host-a.example", "host-b.example"} {
+		cfg, err := Default()
+		require.NoError(t, err)
+		cfg.DataDir = dir
+		cfg.LocalMachineName = hostname
+		localDir := filepath.Join(dir, "claude")
+		cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentClaude: {localDir}}
+		cfg.sessionSourceConfigs = []sessionSourceConfig{
+			{Agent: "copilot", Dir: filepath.Join(dir, "copilot")},
+			{Agent: "codex", Dir: filepath.Join(dir, "codex"), Machine: new("host-c.example")},
+		}
+		// Each fresh config represents a process starting on a different network.
+		require.NoError(t, finishLoadedConfig(&cfg))
+		assert.Equal(t, "host-a.local", cfg.LocalMachineName)
+		assert.Equal(t, "host-a.local", cfg.SourceMachines[parser.AgentClaude][localDir])
+		require.Len(t, cfg.SessionSources, 2)
+		assert.Equal(t, "host-a.local", cfg.SessionSources[0].Machine)
+		assert.Equal(t, "host-c.example", cfg.SessionSources[1].Machine)
+		cfg.PG.URL = "postgres://localhost/test"
+		pg, err := cfg.ResolvePG()
+		require.NoError(t, err)
+		assert.Equal(t, "host-a.local", pg.MachineName)
+		duck, err := cfg.ResolveDuckDB()
+		require.NoError(t, err)
+		assert.Equal(t, "host-a.local", duck.MachineName)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, configFileName))
+	require.NoError(t, err)
+	cfg, err := LoadReadOnly()
+	require.NoError(t, err)
+	assert.Equal(t, "host-a.local", cfg.LocalMachineName)
+	after, err := os.ReadFile(filepath.Join(dir, configFileName))
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+}
+
+func TestLoadConfiguredLocalMachineName(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"local_machine_name": "host-a.example",
+		"cursor_secret":      "existing-secret",
+	})
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+	assert.Equal(t, "host-a.example", cfg.LocalMachineName)
+	assert.Equal(t, "existing-secret", cfg.CursorSecret)
+}
+
+func TestLoadRejectsInvalidLocalMachineName(t *testing.T) {
+	for _, name := range []string{"", "  ", "local"} {
+		t.Run(name, func(t *testing.T) {
+			dir := setupTestEnv(t)
+			writeConfig(t, dir, map[string]any{"local_machine_name": name})
+			_, err := LoadMinimal()
+			require.ErrorContains(t, err, "local_machine_name")
+		})
+	}
+}
+
+func TestSavedMachineNamePreservesSymlinkedCodexMetadata(t *testing.T) {
+	skipIfNotUnix(t)
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{"local_machine_name": "host-a.example"})
+	root := filepath.Join(dir, "archive", "sessions")
+	home := filepath.Join(dir, "profile")
+	require.NoError(t, os.MkdirAll(root, 0o700))
+	require.NoError(t, os.MkdirAll(home, 0o700))
+	alias := filepath.Join(home, "sessions")
+	require.NoError(t, os.Symlink(root, alias))
+	cfg, err := Default()
+	require.NoError(t, err)
+	cfg.DataDir = dir
+	cfg.LocalMachineName = "host-b.example"
+	cfg.AgentDirs = map[parser.AgentType][]string{parser.AgentCodex: {alias}}
+	require.NoError(t, finishLoadedConfig(&cfg))
+	assert.Equal(t, "host-a.example", cfg.SourceMachines[parser.AgentCodex][root])
+	assert.Contains(t, cfg.ProviderMetadata[parser.AgentCodex][root], home)
+}
+
 func TestResolvePG_ExpandsEnvVars(t *testing.T) {
 	t.Setenv("PGPASS", "env-secret")
 	t.Setenv("PGURL", "postgres://localhost/test")

@@ -140,7 +140,7 @@ projects = ["alpha", "beta"]
 | `path`             | `~/.agentsview/sessions.duckdb` | Local DuckDB mirror file                                                                    |
 | `url`              |                                 | Remote Quack endpoint for `duckdb status` and `duckdb serve` (`quack:` URI); read side only — `duckdb push` rejects it |
 | `token`            |                                 | Quack authentication token                                                                  |
-| `machine_name`     | OS hostname                     | Identifies the pushing machine                                                              |
+| `machine_name`     | `local_machine_name`            | Identifies the pushing machine; uses the saved local name unless explicitly set               |
 | `allow_insecure`   | `false`                         | Allow plain-HTTP Quack beyond loopback                                                      |
 | `attach_timeout`   | `20s`                           | Bound on a remote Quack `ATTACH` (and its TCP preflight); `0` uses the default, a negative value disables the guard |
 | `projects`         |                                 | Array of project names to include in push                                                   |

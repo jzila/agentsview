@@ -27,8 +27,8 @@ AgentsView stores all persistent data under a single directory, defaulting to
 
 `usage-cache-v6-<id>.db` is a derived cache of usage aggregates, not user data.
 It is safe to delete when no AgentsView process is running; the next usage query
-rebuilds it automatically. `sessions.db` remains the only file that needs
-backing up.
+rebuilds it automatically. Back up `sessions.db` for session history and
+`config.toml` to preserve settings, including the saved machine name.
 
 The desktop app and CLI share a detached local daemon for fresh reads and
 writes. A running daemon owns local SQLite writes for this data directory and
@@ -47,6 +47,16 @@ synced into AgentsView's archive and is not pushed to PostgreSQL.
 
 The config file at `~/.agentsview/config.toml` is auto-created on first run. It
 stores persistent settings that survive restarts.
+
+AgentsView saves the initial system hostname as the top-level
+`local_machine_name` setting and reuses it on later starts. Network changes,
+including DHCP or reverse DNS hostname changes on macOS, therefore do not give
+new local sessions a different machine label. You can set this name before the
+first import; it must be non-empty and cannot be the reserved name `local`.
+PostgreSQL and DuckDB use this saved name unless their own `machine_name` is set.
+Keep this setting when backing up your configuration, and choose a distinct name
+if copying configuration to another machine. Existing session labels are
+preserved; setting this value does not merge historical aliases.
 
 !!! note
 
@@ -976,7 +986,7 @@ machine = "buildbox"
 The fields are `agent`, `dir`, and optional `machine`. Entries are additive to
 the per-agent arrays, defaults, and environment variables above. Equivalent
 roots are deduplicated; a structured entry supplies the machine label when it
-duplicates a shorthand root. An omitted `machine` uses the local hostname.
+duplicates a shorthand root. An omitted `machine` uses `local_machine_name`.
 
 Machine attribution is captured when each session is first ingested. Changing an
 entry's `machine` value affects newly discovered sessions but does not relabel

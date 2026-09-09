@@ -38,8 +38,8 @@ machine_name = "my-laptop"
 ```
 
 The `machine_name` identifies which machine pushed each session. It defaults to
-the system hostname if omitted. It must not be `"local"` (reserved for the local
-SQLite sentinel).
+the saved `local_machine_name` if omitted. It must not be `"local"` (reserved for
+the local SQLite sentinel).
 
 For multiple PostgreSQL destinations, use named `[pg.NAME]` blocks and
 `default_pg` instead of the legacy single `[pg]` block. Named target names are
@@ -272,7 +272,7 @@ PG messages: 47291
 
 | Field       | Description                                                |
 | ----------- | ---------------------------------------------------------- |
-| Machine     | Configured machine name or hostname                        |
+| Machine     | Configured machine name or saved local machine name        |
 | Last push   | Timestamp of last successful push ("never" if no push yet) |
 | PG sessions | Total session count in PostgreSQL (all machines)           |
 | PG messages | Total message count in PostgreSQL (all machines)           |
@@ -481,7 +481,7 @@ allow_insecure = false
 | Field              | Default      | Description                                                            |
 | ------------------ | ------------ | ---------------------------------------------------------------------- |
 | `url`              | (required)   | PostgreSQL connection string                                           |
-| `machine_name`     | OS hostname  | Identifies the pushing machine; defaults to `os.Hostname()` if omitted |
+| `machine_name`     | `local_machine_name` | Identifies the pushing machine; uses the saved local name if omitted |
 | `schema`           | `agentsview` | PostgreSQL schema name                                                 |
 | `allow_insecure`   | `false`      | Allow non-TLS connections to non-loopback hosts                        |
 | `projects`         |              | Array of project names to include in push                              |

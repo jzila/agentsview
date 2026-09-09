@@ -57,6 +57,12 @@ description: Release history for AgentsView
 
 **Bug fixes**
 
+- Keep new sessions under one machine label when network changes alter the
+  computer's hostname, including on macOS. AgentsView now saves
+  `local_machine_name` in its configuration and also uses it for default
+  PostgreSQL and DuckDB attribution. Existing session labels are preserved;
+  this prevents new splits but does not merge historical aliases.
+
 - Activity reports load faster on large archives by skipping historical tool
   results that cannot affect the selected period. SQLite and PostgreSQL build a
   focused index during the next writable database setup, which can make that

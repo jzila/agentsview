@@ -40,7 +40,8 @@ machine = "laptop"
 `agent` must be a supported AgentsView parser name. `dir` must be a filesystem
 root in that agent's native layout. `machine` uses the same machine label shown
 in session filters and configured by `[pg].machine_name`. If `machine` is
-omitted, AgentsView uses the primary viewer's hostname.
+omitted, AgentsView uses the primary viewer's saved `local_machine_name`,
+initially taken from its hostname and retained across network changes.
 
 Existing per-agent arrays and environment variables remain supported. Structured
 sources are additive:

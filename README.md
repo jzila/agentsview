@@ -520,6 +520,10 @@ RooCode-derived VS Code extension that wrote per-task JSON under
 
 ## Filesystem Session Sync
 
+Local imports use `local_machine_name` from `config.toml`. AgentsView saves the
+initial hostname there so network changes do not split future usage across
+machine labels. Existing session labels are preserved.
+
 One primary AgentsView instance can ingest native agent session directories
 copied or mounted from other machines without PostgreSQL:
 

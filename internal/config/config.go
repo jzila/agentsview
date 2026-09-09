@@ -675,11 +675,9 @@ type Config struct {
 	Automated            AutomatedConfig        `json:"automated,omitempty" toml:"automated"`
 	Agent                map[string]AgentConfig `json:"agent,omitempty" toml:"agent"`
 	WriteTimeout         time.Duration          `json:"-" toml:"-"`
-	// LocalMachineName is the operating-system hostname used to identify
-	// sessions ingested from this machine. It is runtime-derived rather than
-	// persisted configuration so local and remote source labels share the same
-	// hostname namespace.
-	LocalMachineName string `json:"-" toml:"-"`
+	// LocalMachineName identifies locally ingested sessions. The initial hostname
+	// is persisted so network changes do not split one machine's usage.
+	LocalMachineName string `json:"-" toml:"local_machine_name"`
 
 	// AgentDirs maps each AgentType to its configured
 	// directories. Single-dir agents store a one-element
@@ -1194,6 +1192,9 @@ func loadPGServeBase() (Config, error) {
 	if err := cfg.loadFile(); err != nil {
 		return cfg, fmt.Errorf("loading config file: %w", err)
 	}
+	if err := cfg.ensureLocalMachineName(); err != nil {
+		return cfg, fmt.Errorf("ensuring local machine name: %w", err)
+	}
 	if err := cfg.ensureCursorSecret(); err != nil {
 		return cfg, fmt.Errorf("ensuring cursor secret: %w", err)
 	}
@@ -1246,6 +1247,13 @@ func loadConfigLayers() (Config, error) {
 }
 
 func finishLoadedConfig(cfg *Config) error {
+	if err := expandDataDir(cfg); err != nil {
+		return err
+	}
+	// Select the saved identity before resolving source roots and their metadata.
+	if err := cfg.ensureLocalMachineName(); err != nil {
+		return fmt.Errorf("ensuring local machine name: %w", err)
+	}
 	if err := finalize(cfg); err != nil {
 		return err
 	}
@@ -1429,6 +1437,7 @@ func normalizeLegacyJSONNumbers(value any) (any, error) {
 
 func (c *Config) applyConfigTOML(data string) error {
 	var file struct {
+		LocalMachineName               *string                `toml:"local_machine_name"`
 		GithubToken                    string                 `toml:"github_token"`
 		CursorSecret                   string                 `toml:"cursor_secret"`
 		CursorAdminAPIKey              string                 `toml:"cursor_admin_api_key"`
@@ -1480,6 +1489,13 @@ func (c *Config) applyConfigTOML(data string) error {
 	}
 	if file.CursorSecret != "" {
 		c.CursorSecret = file.CursorSecret
+	}
+	if file.LocalMachineName != nil {
+		name := strings.TrimSpace(*file.LocalMachineName)
+		if name == "" || name == "local" {
+			return fmt.Errorf("local_machine_name must be non-empty and must not be the reserved name local")
+		}
+		c.LocalMachineName = name
 	}
 	if file.CursorAdminAPIKey != "" && c.CursorAdminAPIKey == "" {
 		c.CursorAdminAPIKey = file.CursorAdminAPIKey
@@ -1803,6 +1819,29 @@ func NormalizeAgentHomes(
 		normalized[agent] = cleaned
 	}
 	return normalized, nil
+}
+
+func (c *Config) ensureLocalMachineName() error {
+	return c.withConfigLock(func() error {
+		existing, err := c.readConfigMap()
+		if err != nil {
+			return err
+		}
+		if value, exists := existing["local_machine_name"]; exists {
+			name, ok := value.(string)
+			name = strings.TrimSpace(name)
+			if !ok || name == "" || name == "local" {
+				return fmt.Errorf("local_machine_name must be a non-empty string other than the reserved name local")
+			}
+			c.LocalMachineName = name
+			return nil
+		}
+		if strings.TrimSpace(c.LocalMachineName) == "" || c.LocalMachineName == "local" {
+			return fmt.Errorf("set local_machine_name to a non-empty name other than the reserved name local")
+		}
+		existing["local_machine_name"] = c.LocalMachineName
+		return c.writeConfigMap(existing)
+	})
 }
 
 func (c *Config) ensureCursorSecret() error {
@@ -3035,6 +3074,9 @@ func (c *Config) resolvePGConfig(
 		pg.Schema = "agentsview"
 	}
 	if pg.MachineName == "" {
+		pg.MachineName = c.LocalMachineName
+	}
+	if pg.MachineName == "" {
 		h, err := os.Hostname()
 		if err != nil {
 			return pg, fmt.Errorf("os.Hostname failed (%w); set machine_name explicitly in config", err)
@@ -3152,6 +3194,9 @@ func (c *Config) ResolveDuckDB() (DuckDBConfig, error) {
 	}
 	if duck.Path == "" {
 		duck.Path = filepath.Join(c.DataDir, "sessions.duckdb")
+	}
+	if duck.MachineName == "" {
+		duck.MachineName = c.LocalMachineName
 	}
 	if duck.MachineName == "" {
 		h, err := os.Hostname()
