@@ -2627,7 +2627,7 @@ func TestValidateArtifactOriginID(t *testing.T) {
 		origin  string
 		wantErr bool
 	}{
-		{"valid", "wesm-studio-m4", false},
+		{"valid", "host-a", false},
 		{"valid single word", "origin1", false},
 		{"empty", "", true},
 		{"reserved local", "local", true},
