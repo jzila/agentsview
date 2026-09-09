@@ -121,7 +121,7 @@ jobs:
           - os: macos-15
             goos: darwin
             goarch: arm64
-          - os: namespace-profile-windows-amd64
+          - os: namespace-profile-windows-16cpu
             goos: windows
             goarch: amd64
           - os: windows-11-vs2026-arm

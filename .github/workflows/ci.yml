@@ -3,6 +3,15 @@ name: CI
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      runner_size:
+        description: Namespace runner size for this trial
+        type: choice
+        default: 16cpu
+        options:
+          - 4cpu
+          - 8cpu
+          - 16cpu
   push:
     branches: [main]
   # Run on every pull request regardless of base branch so stacked PRs that
@@ -10,7 +19,7 @@ on:
   # lint, and e2e suite. The expensive desktop/tauri bundle builds are gated
   # to main separately in desktop-artifacts.yml.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-${{ inputs.runner_size || '16cpu' }}
   cancel-in-progress: true
 
 permissions:
@@ -18,7 +27,7 @@ permissions:
 
 jobs:
   lint:
-    runs-on: namespace-profile-linux-16cpu
+    runs-on: ${{ format('namespace-profile-linux-{0}', inputs.runner_size || '16cpu') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -38,7 +47,7 @@ jobs:
         run: make lint-ci
 
   frontend:
-    runs-on: namespace-profile-linux-16cpu
+    runs-on: ${{ format('namespace-profile-linux-{0}', inputs.runner_size || '16cpu') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -81,7 +90,7 @@ jobs:
         working-directory: frontend
 
   frontend-node-25:
-    runs-on: namespace-profile-linux-16cpu
+    runs-on: ${{ format('namespace-profile-linux-{0}', inputs.runner_size || '16cpu') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -100,7 +109,7 @@ jobs:
         working-directory: frontend
 
   docs:
-    runs-on: namespace-profile-linux-16cpu
+    runs-on: ${{ format('namespace-profile-linux-{0}', inputs.runner_size || '16cpu') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -122,7 +131,7 @@ jobs:
         run: make docs-check
 
   scripts:
-    runs-on: namespace-profile-linux-16cpu
+    runs-on: ${{ format('namespace-profile-linux-{0}', inputs.runner_size || '16cpu') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -143,9 +152,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            runner: namespace-profile-linux-16cpu
+            runner: ${{ format('namespace-profile-linux-{0}', inputs.runner_size || '16cpu') }}
           - os: windows-latest
-            runner: namespace-profile-windows-amd64
+            runner: ${{ format('namespace-profile-windows-{0}', inputs.runner_size || '16cpu') }}
           - os: macos-latest
             runner: macos-latest
     steps:
@@ -241,7 +250,7 @@ jobs:
   # the remaining Windows package set.
   test-sqlite-packages-windows:
     name: Go Test (windows-latest, ${{ matrix.name }})
-    runs-on: namespace-profile-windows-amd64
+    runs-on: ${{ format('namespace-profile-windows-{0}', inputs.runner_size || '16cpu') }}
     strategy:
       fail-fast: false
       matrix:
@@ -417,7 +426,7 @@ jobs:
   # Keep the derived-mirror suite concurrent with the main Windows package set.
   test-duckdb-windows:
     name: Go Test (windows-latest, DuckDB)
-    runs-on: namespace-profile-windows-amd64
+    runs-on: ${{ format('namespace-profile-windows-{0}', inputs.runner_size || '16cpu') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -457,7 +466,7 @@ jobs:
 
   test-race:
     name: Go Test (race detector)
-    runs-on: namespace-profile-linux-16cpu
+    runs-on: ${{ format('namespace-profile-linux-{0}', inputs.runner_size || '16cpu') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -488,7 +497,7 @@ jobs:
 
   desktop-windows-unit:
     name: Desktop Unit Tests (Windows)
-    runs-on: namespace-profile-windows-amd64
+    runs-on: ${{ format('namespace-profile-windows-{0}', inputs.runner_size || '16cpu') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -526,7 +535,7 @@ jobs:
         run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib
 
   integration:
-    runs-on: namespace-profile-linux-16cpu
+    runs-on: ${{ format('namespace-profile-linux-{0}', inputs.runner_size || '16cpu') }}
     services:
       postgres:
         image: pgvector/pgvector:pg18
@@ -595,7 +604,7 @@ jobs:
           TEST_SSH_KEY: ${{ github.workspace }}/testdata/ssh/test_key
 
   e2e:
-    runs-on: namespace-profile-linux-16cpu
+    runs-on: ${{ format('namespace-profile-linux-{0}', inputs.runner_size || '16cpu') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
