@@ -1733,6 +1733,13 @@ func TestExtractCandidatesRespectsProgressState(t *testing.T) {
 	seedExtractCandidate(t, d, "sess-done", 3*time.Hour, nil)
 	seedExtractCandidate(t, d, "sess-failed-fresh", 2*time.Hour, nil)
 	seedExtractCandidate(t, d, "sess-failed-stale", 1*time.Hour, nil)
+	// Done revisits intentionally include writes at the extraction timestamp.
+	// Make this unchanged fixture strictly older instead of relying on the
+	// seeding and extraction calls landing in different milliseconds.
+	_, err := d.getWriter().Exec(
+		"UPDATE sessions SET local_modified_at = '2000-01-01T00:00:00.000Z' " +
+			"WHERE id = 'sess-done'")
+	require.NoError(t, err)
 
 	for _, fp := range []string{"fp-a", "fp-b"} {
 		_, err := d.EnsureExtractGeneration(ctx, ExtractGeneration{
@@ -1740,7 +1747,7 @@ func TestExtractCandidatesRespectsProgressState(t *testing.T) {
 		})
 		require.NoError(t, err)
 	}
-	_, err := d.UpsertExtractProgress(ctx, ExtractProgressUpsert{
+	_, err = d.UpsertExtractProgress(ctx, ExtractProgressUpsert{
 		SessionID: "sess-pending", Fingerprint: "fp-a",
 		ContentDigest: "dg", UnitsTotal: 2, StampedAt: time.Now(),
 	})
