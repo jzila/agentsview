@@ -12,6 +12,10 @@ on:
           - 4cpu
           - 8cpu
           - 16cpu
+      group_windows_packages:
+        description: Trial Capture, Database, and Parser in one Windows job
+        type: boolean
+        default: false
   push:
     branches: [main]
   # Run on every pull request regardless of base branch so stacked PRs that
@@ -19,7 +23,7 @@ on:
   # lint, and e2e suite. The expensive desktop/tauri bundle builds are gated
   # to main separately in desktop-artifacts.yml.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-${{ inputs.runner_size || '16cpu' }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-${{ inputs.runner_size || '16cpu' }}-${{ inputs.group_windows_packages && 'grouped' || 'split' }}
   cancel-in-progress: true
 
 permissions:
@@ -246,23 +250,22 @@ jobs:
         if: runner.os == 'Linux' && steps.codecov.outcome == 'failure'
         run: echo "::warning::Codecov upload failed"
 
-  # Keep the slowest SQLite-backed packages isolated from each other and from
-  # the remaining Windows package set.
+  # Manual trials may share setup for the shorter suites. Sync remains
+  # isolated, and routine CI retains the separate package jobs.
   test-sqlite-packages-windows:
     name: Go Test (windows-latest, ${{ matrix.name }})
     runs-on: ${{ format('namespace-profile-windows-{0}', inputs.runner_size || '16cpu') }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Capture
-            package: ./internal/capture
-          - name: Database
-            package: ./internal/db
-          - name: Parser
-            package: ./internal/parser
-          - name: Sync
-            package: ./internal/sync
+        include: >-
+          ${{ fromJSON(inputs.group_windows_packages &&
+          '[{"name":"Capture, Database, Parser","package":"./internal/capture ./internal/db ./internal/parser"},
+            {"name":"Sync","package":"./internal/sync"}]' ||
+          '[{"name":"Capture","package":"./internal/capture"},
+            {"name":"Database","package":"./internal/db"},
+            {"name":"Parser","package":"./internal/parser"},
+            {"name":"Sync","package":"./internal/sync"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -299,7 +302,7 @@ jobs:
       # permissions that capture deliberately rejects. Use a private directory
       # directly on the system drive for this job's fixtures.
       - name: Prepare capture test temporary directory
-        if: matrix.name == 'Capture'
+        if: contains(matrix.package, './internal/capture')
         shell: pwsh
         run: |
           $testTemp = Join-Path $env:SystemDrive ("agentsview-ci-" + [guid]::NewGuid().ToString("N"))
@@ -319,7 +322,7 @@ jobs:
           CGO_ENABLED: "1"
 
       - name: Remove capture test temporary directory
-        if: always() && matrix.name == 'Capture' && env.AGENTSVIEW_CI_TEMP != ''
+        if: always() && contains(matrix.package, './internal/capture') && env.AGENTSVIEW_CI_TEMP != ''
         shell: pwsh
         run: Remove-Item -LiteralPath $env:AGENTSVIEW_CI_TEMP -Recurse -Force
 
