@@ -292,7 +292,7 @@ func TestPricingRefreshJobSchedulerRecordsAndSurvivesFailure(t *testing.T) {
 	})
 
 	job := newPricingRefreshJob(database, nil, time.Hour)
-	sched := poller.New()
+	sched := poller.New(nil)
 	// RunAtStart is disabled for this test: it drives attempts explicitly
 	// via TriggerNow, and a concurrent RunAtStart attempt racing the first
 	// TriggerNow could consume the "failing" transport itself, recording a

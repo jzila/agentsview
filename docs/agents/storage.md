@@ -405,6 +405,18 @@ write rule so their tool-call fingerprints match SQLite. Anyone reading the
 archive or a mirror by hand sees the empty column and must join the events table
 to recover the text.
 
+### Background poller status
+
+`poller_status` is a SQLite-only table (schema.sql) holding one row per
+`internal/poller.Scheduler` job, keyed by the job's stable name (e.g.
+`pricing-refresh`, `cursor-usage`). It records `last_attempt`, `last_success`,
+`last_error`, `consecutive_failures`, and `next_run` so `agentsview doctor` and
+the `/api/v1/system/pollers` status endpoint can show a job's state across a
+daemon restart. It is machine-local scheduling bookkeeping, like
+`parser_checkpoints`, and is never mirrored to PostgreSQL or DuckDB. A missing
+row means the job has not attempted a run against this database yet, not an
+error.
+
 ## DuckDB Mirror
 
 - Treat DuckDB as a disposable read mirror of SQLite, never as a system of

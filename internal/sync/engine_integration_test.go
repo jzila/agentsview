@@ -26,6 +26,7 @@ import (
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/poller"
 	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/testjsonl"
 
@@ -11032,6 +11033,50 @@ func TestResyncAllPreservesModelPricing(t *testing.T) {
 		"model pricing must survive the resync swap")
 	assert.Equal(t, money.MustParseDollars("15"), pricing.InputPerMTok, "input rate")
 	assert.Equal(t, money.MustParseDollars("75"), pricing.OutputPerMTok, "output rate")
+}
+
+// TestResyncAllPreservesPollerStatus covers internal/poller.Scheduler
+// diagnostics surviving a full resync's archive replacement: without
+// copying poller_status across the swap, a restart right after resync
+// would report every background job as "never run" and lose its
+// cooldown/backoff/Retry-After deadlines.
+func TestResyncAllPreservesPollerStatus(t *testing.T) {
+	env := setupTestEnv(t)
+
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "Hello").
+		AddClaudeAssistant(tsEarlyS5, "Hi there!").
+		String()
+	env.writeClaudeSession(
+		t, "test-proj", "poller-status-test.jsonl", content,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+	assertSessionMessageCount(t, env.db, "poller-status-test", 2)
+
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	want := poller.Status{
+		Name:                "pricing-refresh",
+		LastAttempt:         now,
+		LastSuccess:         now.Add(-time.Hour),
+		LastError:           "boom",
+		ConsecutiveFailures: 2,
+		NextRun:             now.Add(24 * time.Hour),
+	}
+	require.NoError(t, env.db.SaveStatus(context.Background(), want))
+
+	stats := env.engine.ResyncAll(context.Background(), nil)
+	require.NotZero(t, stats.Synced, "expected at least 1 synced session")
+
+	statuses, err := env.db.LoadPollerStatuses(context.Background())
+	require.NoError(t, err, "LoadPollerStatuses")
+	require.Contains(t, statuses, "pricing-refresh",
+		"poller status must survive the resync swap")
+	got := statuses["pricing-refresh"]
+	assert.True(t, want.LastAttempt.Equal(got.LastAttempt))
+	assert.True(t, want.LastSuccess.Equal(got.LastSuccess))
+	assert.Equal(t, want.LastError, got.LastError)
+	assert.Equal(t, want.ConsecutiveFailures, got.ConsecutiveFailures)
+	assert.True(t, want.NextRun.Equal(got.NextRun))
 }
 
 func TestResyncAllAbortsWhenSessionSnapshotMetadataCannotCopy(t *testing.T) {

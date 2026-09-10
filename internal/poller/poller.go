@@ -58,7 +58,8 @@ type Options struct {
 	// cooldown window is skipped rather than run early.
 	Cooldown time.Duration
 	// RunAtStart runs the job once, as soon as its loop starts, instead
-	// of waiting for the first interval tick.
+	// of waiting for the first interval tick. It still observes
+	// Cooldown against a status restored from a StatusStore.
 	RunAtStart bool
 }
 
@@ -70,6 +71,14 @@ type Status struct {
 	LastError           string    `json:"last_error,omitempty"`
 	ConsecutiveFailures int       `json:"consecutive_failures"`
 	NextRun             time.Time `json:"next_run,omitzero"`
+}
+
+// StatusStore persists Status across daemon restarts. internal/db
+// implements it against the SQLite-only poller_status table; see
+// docs/agents/storage.md.
+type StatusStore interface {
+	LoadStatuses(ctx context.Context) (map[string]Status, error)
+	SaveStatus(ctx context.Context, status Status) error
 }
 
 // Clock abstracts time so the Scheduler can be driven deterministically in
@@ -99,10 +108,11 @@ type job struct {
 }
 
 // Scheduler runs registered Jobs on their own goroutines, applying jitter,
-// cooldown, backoff, and Retry-After uniformly. Status is kept in memory for
-// the life of the process.
+// cooldown, backoff, and Retry-After uniformly, and persists Status through
+// an optional StatusStore.
 type Scheduler struct {
 	clock   Clock
+	store   StatusStore
 	logf    func(format string, args ...any)
 	randSrc func(max time.Duration) time.Duration
 
@@ -128,10 +138,12 @@ func withRand(randSrc func(max time.Duration) time.Duration) SchedulerOption {
 	return func(s *Scheduler) { s.randSrc = randSrc }
 }
 
-// New creates a Scheduler.
-func New(opts ...SchedulerOption) *Scheduler {
+// New creates a Scheduler. store may be nil to disable status persistence
+// (status is then kept in memory only, for the process lifetime).
+func New(store StatusStore, opts ...SchedulerOption) *Scheduler {
 	s := &Scheduler{
 		clock:   realClock{},
+		store:   store,
 		logf:    log.Printf,
 		jobs:    make(map[string]*job),
 		randSrc: defaultJitter,
@@ -190,16 +202,18 @@ func (s *Scheduler) Register(j Job, opts Options) {
 	s.mu.Unlock()
 
 	if started {
+		s.loadOneStatus(ctx, rj)
 		s.wg.Add(1)
 		go s.run(ctx, rj)
 	}
 }
 
-// Start spawns each registered job's loop. It returns immediately; job loops
-// stop once ctx is canceled. A job registered after Start starts immediately
-// (see Register). A second call to Start is ignored and logged: every
-// already-registered job already has a running loop, so spawning another
-// round would run each job's loop twice.
+// Start loads persisted status for every registered job and spawns each
+// job's loop. It returns immediately; job loops stop once ctx is canceled.
+// A job registered after Start starts immediately (see Register). A second
+// call to Start is ignored and logged: every already-registered job already
+// has a running loop, so spawning another round would run each job's loop
+// twice.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
 	if s.started {
@@ -215,6 +229,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 	}
 	s.mu.Unlock()
 
+	s.loadStatuses(ctx)
 	for _, rj := range jobs {
 		s.wg.Add(1)
 		go s.run(ctx, rj)
@@ -225,6 +240,51 @@ func (s *Scheduler) Start(ctx context.Context) {
 // tests driving cancellation; production callers rely on ctx instead.
 func (s *Scheduler) Wait() {
 	s.wg.Wait()
+}
+
+func (s *Scheduler) loadStatuses(ctx context.Context) {
+	if s.store == nil {
+		return
+	}
+	statuses, err := s.store.LoadStatuses(ctx)
+	if err != nil {
+		s.logf("poller: loading persisted status: %v", err)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, status := range statuses {
+		if rj, ok := s.jobs[name]; ok {
+			rj.mu.Lock()
+			rj.status = status
+			rj.mu.Unlock()
+		}
+	}
+}
+
+func (s *Scheduler) loadOneStatus(ctx context.Context, rj *job) {
+	if s.store == nil {
+		return
+	}
+	statuses, err := s.store.LoadStatuses(ctx)
+	if err != nil {
+		s.logf("poller: loading persisted status: %v", err)
+		return
+	}
+	if status, ok := statuses[rj.j.Name()]; ok {
+		rj.mu.Lock()
+		rj.status = status
+		rj.mu.Unlock()
+	}
+}
+
+func (s *Scheduler) saveStatus(ctx context.Context, status Status) {
+	if s.store == nil {
+		return
+	}
+	if err := s.store.SaveStatus(ctx, status); err != nil {
+		s.logf("poller: persisting status for %q: %v", status.Name, err)
+	}
 }
 
 // Status returns a snapshot of every registered job's Status, in
@@ -356,16 +416,17 @@ func (s *Scheduler) initialDelay(rj *job) time.Duration {
 	return delay
 }
 
-// attempt runs one Job.Run call, unless Cooldown gates it, and updates
-// Status. bypassCooldown is set only for a TriggerNow call.
+// attempt runs one Job.Run call, unless Cooldown gates it, and updates and
+// persists Status. bypassCooldown is set only for a TriggerNow call.
 func (s *Scheduler) attempt(ctx context.Context, rj *job, bypassCooldown bool) error {
 	now := s.clock.Now()
 
 	rj.mu.Lock()
 	status := rj.status
 	rj.mu.Unlock()
-	// Status.Name always tracks the job's own name; Register always sets
-	// it, but this keeps it authoritative regardless.
+	// Status.Name always tracks the job's own name, regardless of how the
+	// status was seeded (Register always sets it, but a status restored
+	// from a store keyed by name is authoritative too).
 	status.Name = rj.j.Name()
 
 	if !bypassCooldown && rj.opts.Cooldown > 0 && !status.LastAttempt.IsZero() {
@@ -373,12 +434,14 @@ func (s *Scheduler) attempt(ctx context.Context, rj *job, bypassCooldown bool) e
 		if elapsed < rj.opts.Cooldown {
 			status.NextRun = now.Add(rj.opts.Cooldown - elapsed + s.jitter(rj.opts.Jitter))
 			s.setStatus(rj, status)
+			s.saveStatus(ctx, status)
 			return nil
 		}
 	}
 
 	status.LastAttempt = now
 	s.setStatus(rj, status)
+	s.saveStatus(ctx, status)
 
 	runErr := rj.j.Run(ctx)
 
@@ -402,6 +465,7 @@ func (s *Scheduler) attempt(ctx context.Context, rj *job, bypassCooldown bool) e
 		}
 	}
 	s.setStatus(rj, status)
+	s.saveStatus(ctx, status)
 	return runErr
 }
 

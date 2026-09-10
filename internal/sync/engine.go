@@ -3494,6 +3494,21 @@ func (e *Engine) resyncBuildLocked(
 		)
 	}
 
+	// Copy internal/poller.Scheduler status (poller_status) so background
+	// job diagnostics, cooldown, backoff, and Retry-After deadlines survive
+	// the swap. An archive predating this table has nothing to copy; that
+	// is not an error. Non-fatal like the pricing copy above: a failed copy
+	// only degrades diagnostics until the next attempt persists a fresh row,
+	// and does not justify aborting the resync.
+	if err := newDB.CopyPollerStatusFrom(origPath); err != nil {
+		log.Printf("resync: copy poller status: %v", err)
+		stats.Warnings = append(stats.Warnings,
+			"poller status copy failed; background job diagnostics show "+
+				"as never run, and cooldown/backoff timing resets, until "+
+				"the next attempt: "+err.Error(),
+		)
+	}
+
 	// Copy orphaned sessions (source files gone) from the
 	// old DB so archived data is preserved. Failure aborts
 	// the swap to avoid losing archived sessions.
