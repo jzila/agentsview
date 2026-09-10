@@ -1416,3 +1416,23 @@ CREATE TABLE IF NOT EXISTS session_signal_state (
     signal_version      INTEGER NOT NULL,
     updated_at          TEXT NOT NULL
 );
+
+-- Machine-local internal/poller.Scheduler status, one row per registered
+-- background job (name is the Job's stable identifier, e.g.
+-- "pricing-refresh" or "cursor-usage"). SQLite-only, never mirrored to
+-- PostgreSQL or DuckDB: it exists so `agentsview doctor` and the
+-- /api/v1/system/pollers status endpoint can show last success/error and
+-- next-run across a daemon restart. A missing row means the job has never
+-- attempted a run on this database. Timestamps are RFC3339Nano in UTC, or
+-- empty when unset.
+CREATE TABLE IF NOT EXISTS poller_status (
+    name                 TEXT PRIMARY KEY,
+    last_attempt         TEXT NOT NULL DEFAULT '',
+    last_success         TEXT NOT NULL DEFAULT '',
+    last_error           TEXT NOT NULL DEFAULT '',
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    next_run             TEXT NOT NULL DEFAULT '',
+    updated_at           TEXT NOT NULL DEFAULT (
+        strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    )
+);

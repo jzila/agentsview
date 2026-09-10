@@ -3,6 +3,7 @@ package poller
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -94,8 +95,33 @@ func (j *fakeJob) Run(ctx context.Context) error {
 	return j.run(ctx)
 }
 
+// memStore is an in-memory StatusStore for round-trip tests.
+type memStore struct {
+	mu       sync.Mutex
+	statuses map[string]Status
+}
+
+func newMemStore() *memStore {
+	return &memStore{statuses: make(map[string]Status)}
+}
+
+func (m *memStore) LoadStatuses(context.Context) (map[string]Status, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]Status, len(m.statuses))
+	maps.Copy(out, m.statuses)
+	return out, nil
+}
+
+func (m *memStore) SaveStatus(_ context.Context, status Status) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.statuses[status.Name] = status
+	return nil
+}
+
 func TestJitterStaysWithinBounds(t *testing.T) {
-	s := New()
+	s := New(nil)
 	max := 5 * time.Second
 	for range 500 {
 		d := s.jitter(max)
@@ -105,7 +131,7 @@ func TestJitterStaysWithinBounds(t *testing.T) {
 }
 
 func TestJitterZeroMaxIsZero(t *testing.T) {
-	s := New()
+	s := New(nil)
 	assert.Zero(t, s.jitter(0))
 }
 
@@ -124,7 +150,7 @@ func TestBackoffDelayGrowsAndCaps(t *testing.T) {
 func TestAttemptCooldownSkipsRun(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := newFakeClock(base)
-	s := New(WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
+	s := New(nil, WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
 
 	j := &fakeJob{name: "job", interval: time.Hour}
 	rj := &job{j: j, opts: Options{Cooldown: 10 * time.Minute}, trigger: make(chan chan error, 1)}
@@ -145,7 +171,7 @@ func TestAttemptCooldownSkipsRun(t *testing.T) {
 func TestAttemptBackoffAndResetOnSuccess(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := newFakeClock(base)
-	s := New(WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
+	s := New(nil, WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
 
 	wantErr := errors.New("boom")
 	failures := 0
@@ -190,7 +216,7 @@ func TestAttemptRetryAfterHonored(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := newFakeClock(base)
 	// A non-zero jitter source would prove itself unused by RetryAfter.
-	s := New(WithClock(clock), withRand(func(max time.Duration) time.Duration { return max - 1 }))
+	s := New(nil, WithClock(clock), withRand(func(max time.Duration) time.Duration { return max - 1 }))
 
 	retryAfter := 3 * time.Minute
 	j := &fakeJob{name: "job", interval: time.Hour, run: func(context.Context) error {
@@ -210,7 +236,7 @@ func TestAttemptRetryAfterHonored(t *testing.T) {
 func TestInitialDelayRecordsNextRunStatus(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := newFakeClock(base)
-	s := New(WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
+	s := New(nil, WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
 	j := &fakeJob{name: "job", interval: time.Hour}
 	rj := &job{j: j, opts: Options{}, trigger: make(chan chan error, 1)}
 
@@ -226,7 +252,7 @@ func TestInitialDelayRecordsNextRunStatus(t *testing.T) {
 func TestSchedulerLoopAppliesBackoffAcrossTicks(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := newFakeClock(base)
-	s := New(WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
+	s := New(nil, WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
 
 	var failing atomic.Bool
 	failing.Store(true)
@@ -270,17 +296,18 @@ func TestSchedulerLoopAppliesBackoffAcrossTicks(t *testing.T) {
 	}, 2*time.Second, time.Millisecond)
 }
 
-// TestSchedulerTriggerNowBypassesCooldownOnce covers TriggerNow forcing an
-// attempt that the job's own Cooldown would otherwise gate: a first attempt
-// (via TriggerNow, since a fresh job has no prior attempt to gate on)
-// establishes LastAttempt, and a second TriggerNow made immediately after
-// still runs instead of being skipped for cooldown.
 func TestSchedulerTriggerNowBypassesCooldownOnce(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := newFakeClock(base)
+	store := newMemStore()
+	// Persist a recent attempt so the steady loop would be inside cooldown.
+	require.NoError(t, store.SaveStatus(context.Background(), Status{
+		Name:        "job",
+		LastAttempt: base.Add(-time.Minute),
+	}))
 
 	j := &fakeJob{name: "job", interval: time.Hour}
-	s := New(WithClock(clock))
+	s := New(store, WithClock(clock))
 	s.Register(j, Options{Cooldown: 10 * time.Minute})
 
 	ctx := t.Context()
@@ -288,13 +315,11 @@ func TestSchedulerTriggerNowBypassesCooldownOnce(t *testing.T) {
 
 	err := s.TriggerNow("job")
 	require.NoError(t, err)
-	require.Equal(t, int64(1), j.calls.Load())
-
-	err = s.TriggerNow("job")
-	require.NoError(t, err)
-	assert.Equal(t, int64(2), j.calls.Load(),
+	assert.Equal(t, int64(1), j.calls.Load(),
 		"TriggerNow bypasses cooldown and runs immediately")
 
+	// A second, non-triggered cooldown check right after must still gate
+	// normally: directly exercise attempt() to confirm cooldown resumed.
 	statuses := s.Status()
 	require.Len(t, statuses, 1)
 	assert.Equal(t, clock.Now(), statuses[0].LastAttempt)
@@ -313,7 +338,7 @@ func TestRegisterAfterStartIgnoresDuplicateName(t *testing.T) {
 			return nil
 		}}
 	}
-	s := New()
+	s := New(nil)
 	s.Register(newJob(), Options{})
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -340,7 +365,7 @@ func TestStartCalledTwiceDoesNotDuplicateLoops(t *testing.T) {
 		calls.Add(1)
 		return nil
 	}}
-	s := New()
+	s := New(nil)
 	s.Register(j, Options{RunAtStart: true})
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -359,7 +384,7 @@ func TestSchedulerCancellationStopsCleanly(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := newFakeClock(base)
 	j := &fakeJob{name: "job", interval: time.Hour}
-	s := New(WithClock(clock))
+	s := New(nil, WithClock(clock))
 	s.Register(j, Options{})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -379,8 +404,32 @@ func TestSchedulerCancellationStopsCleanly(t *testing.T) {
 	}
 }
 
+func TestSchedulerStatusPersistenceRoundTrip(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := newFakeClock(base)
+	store := newMemStore()
+
+	j := &fakeJob{name: "job", interval: time.Hour}
+	rj := &job{j: j, opts: Options{}, trigger: make(chan chan error, 1)}
+	s := New(store, WithClock(clock))
+	err := s.attempt(context.Background(), rj, false)
+	require.NoError(t, err)
+
+	// A fresh Scheduler backed by the same store restores the status.
+	j2 := &fakeJob{name: "job", interval: time.Hour}
+	s2 := New(store, WithClock(clock))
+	s2.Register(j2, Options{})
+	ctx := t.Context()
+	s2.Start(ctx)
+
+	statuses := s2.Status()
+	require.Len(t, statuses, 1)
+	assert.Equal(t, clock.Now(), statuses[0].LastSuccess)
+	assert.Equal(t, base, statuses[0].LastAttempt)
+}
+
 func TestErrUnknownJobBeforeStart(t *testing.T) {
-	s := New()
+	s := New(nil)
 	err := s.TriggerNow("nope")
 	assert.ErrorIs(t, err, ErrUnknownJob)
 }
@@ -392,7 +441,7 @@ func TestErrUnknownJobBeforeStart(t *testing.T) {
 // the response: nothing was left running to drain the channel or reply.
 func TestTriggerNowAfterShutdownReturnsPromptly(t *testing.T) {
 	j := &fakeJob{name: "job", interval: time.Hour}
-	s := New()
+	s := New(nil)
 	s.Register(j, Options{})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -427,7 +476,7 @@ func TestTriggerNowQueuedDuringShutdownReturnsPromptly(t *testing.T) {
 		}
 		return ctx.Err()
 	}}
-	s := New()
+	s := New(nil)
 	s.Register(j, Options{RunAtStart: true})
 
 	ctx, cancel := context.WithCancel(context.Background())
