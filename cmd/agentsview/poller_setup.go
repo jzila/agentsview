@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"strings"
+	"time"
 
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/cursorusage"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/poller"
 )
@@ -21,12 +25,24 @@ func (s dbPollerStore) SaveStatus(ctx context.Context, status poller.Status) err
 	return s.db.SaveStatus(ctx, status)
 }
 
+// cursorUsageJobOptions is the Scheduler Options for the Cursor usage poll:
+// RunAtStart gets usage data flowing shortly after daemon startup rather
+// than waiting a full interval, and a short Cooldown keeps a restart or a
+// manual TriggerNow from immediately re-fetching.
+func cursorUsageJobOptions() poller.Options {
+	return poller.Options{
+		Jitter:     2 * time.Minute,
+		Cooldown:   5 * time.Minute,
+		RunAtStart: true,
+	}
+}
+
 // setupPollerScheduler builds and starts the internal/poller Scheduler for
-// this daemon. Pricing refresh runs on it today; the Scheduler exists so
-// future interval-driven background work (e.g. rate-limit tracking) can
-// register alongside it instead of hand-rolling its own ticker loop.
+// this daemon: pricing refresh always, plus Cursor usage polling when an
+// admin API key is configured.
 func setupPollerScheduler(
 	ctx context.Context,
+	cfg config.Config,
 	database *db.DB,
 	pricingRunner pricingRefreshExclusiveRunner,
 ) *poller.Scheduler {
@@ -34,6 +50,17 @@ func setupPollerScheduler(
 
 	pricingJob := newPricingRefreshJob(database, pricingRunner, pricingRefreshJobInterval)
 	sched.Register(pricingJob, pricingRefreshJobOptions())
+
+	if apiKey := strings.TrimSpace(cfg.CursorAdminAPIKey); apiKey != "" {
+		cursorJob := cursorusage.NewJob(
+			cursorusage.NewClient(apiKey),
+			database,
+			cursorusage.DefaultInterval,
+			cfg.CursorAdminEmail,
+			cfg.CursorAdminUserID,
+		)
+		sched.Register(cursorJob, cursorUsageJobOptions())
+	}
 
 	sched.Start(ctx)
 	return sched
