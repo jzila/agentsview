@@ -64,6 +64,18 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.waiters = remaining
 }
 
+// WaiterCount reports how many pending After calls are parked waiting for a
+// future deadline. Tests use it to synchronize on the run loop having
+// actually registered its next wait before advancing the clock, since
+// advancing too early would compute the wrong deadline (After measures its
+// duration from the clock's time when it is called, not from an earlier
+// snapshot).
+func (c *fakeClock) WaiterCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.waiters)
+}
+
 // fakeJob is a Job whose Run is driven by a test-supplied function.
 type fakeJob struct {
 	name     string
@@ -192,6 +204,72 @@ func TestAttemptRetryAfterHonored(t *testing.T) {
 		"Retry-After is honored exactly, without jitter")
 }
 
+// TestInitialDelayRecordsNextRunStatus covers a job without RunAtStart:
+// before its first attempt ever runs, Status must already reflect the
+// scheduled next run rather than a zero value for the whole first interval.
+func TestInitialDelayRecordsNextRunStatus(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := newFakeClock(base)
+	s := New(WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
+	j := &fakeJob{name: "job", interval: time.Hour}
+	rj := &job{j: j, opts: Options{}, trigger: make(chan chan error, 1)}
+
+	delay := s.initialDelay(rj)
+	assert.Equal(t, time.Hour, delay)
+	assert.Equal(t, base.Add(time.Hour), rj.status.NextRun)
+}
+
+// TestSchedulerLoopAppliesBackoffAcrossTicks drives the real Start/run loop,
+// not attempt directly: it proves the loop itself rearms its timer from the
+// backoff delay an earlier failed attempt recorded in Status, and recovers
+// once the job starts succeeding again.
+func TestSchedulerLoopAppliesBackoffAcrossTicks(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := newFakeClock(base)
+	s := New(WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
+
+	var failing atomic.Bool
+	failing.Store(true)
+	j := &fakeJob{name: "job", interval: 16 * time.Minute, run: func(context.Context) error {
+		if failing.Load() {
+			return errors.New("boom")
+		}
+		return nil
+	}}
+	s.Register(j, Options{RunAtStart: true})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s.Start(ctx)
+
+	// RunAtStart fires the first (failing) attempt as soon as the loop
+	// starts, with no clock advance needed.
+	require.Eventually(t, func() bool { return j.calls.Load() == 1 }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool {
+		statuses := s.Status()
+		return len(statuses) == 1 && statuses[0].ConsecutiveFailures == 1
+	}, 2*time.Second, time.Millisecond)
+
+	// Wait for the loop to actually register its next wait (backoffDelay
+	// for one failure on a 16m interval is 1m; see TestBackoffDelayGrowsAndCaps)
+	// before advancing, or the advance could race the loop computing its
+	// deadline from a stale "now".
+	require.Eventually(t, func() bool { return clock.WaiterCount() == 1 }, 2*time.Second, time.Millisecond)
+
+	clock.Advance(59 * time.Second)
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, int64(1), j.calls.Load(), "loop must wait out the full backoff delay")
+
+	failing.Store(false)
+	clock.Advance(time.Second)
+
+	require.Eventually(t, func() bool { return j.calls.Load() == 2 }, 2*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool {
+		statuses := s.Status()
+		return len(statuses) == 1 && statuses[0].ConsecutiveFailures == 0
+	}, 2*time.Second, time.Millisecond)
+}
+
 // TestSchedulerTriggerNowBypassesCooldownOnce covers TriggerNow forcing an
 // attempt that the job's own Cooldown would otherwise gate: a first attempt
 // (via TriggerNow, since a fresh job has no prior attempt to gate on)
@@ -220,6 +298,61 @@ func TestSchedulerTriggerNowBypassesCooldownOnce(t *testing.T) {
 	statuses := s.Status()
 	require.Len(t, statuses, 1)
 	assert.Equal(t, clock.Now(), statuses[0].LastAttempt)
+}
+
+// TestRegisterAfterStartIgnoresDuplicateName covers Register called with a
+// name that already has a running loop: the second Job must never get its
+// own loop, since that loop's own status and RunAtStart would be invisible
+// to Status and TriggerNow while still running concurrently with the
+// original.
+func TestRegisterAfterStartIgnoresDuplicateName(t *testing.T) {
+	var calls atomic.Int64
+	newJob := func() *fakeJob {
+		return &fakeJob{name: "job", interval: time.Hour, run: func(context.Context) error {
+			calls.Add(1)
+			return nil
+		}}
+	}
+	s := New()
+	s.Register(newJob(), Options{})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s.Start(ctx)
+
+	// RunAtStart on the duplicate would run immediately if Register had
+	// wrongly spawned a second loop for "job".
+	s.Register(newJob(), Options{RunAtStart: true})
+	time.Sleep(50 * time.Millisecond)
+	assert.Zero(t, calls.Load())
+
+	require.NoError(t, s.TriggerNow("job"))
+	assert.Equal(t, int64(1), calls.Load())
+	assert.Len(t, s.Status(), 1)
+}
+
+// TestStartCalledTwiceDoesNotDuplicateLoops covers a second Start call: every
+// already-registered job already has a running loop, so a second round of
+// goroutines would run each job's RunAtStart attempt twice.
+func TestStartCalledTwiceDoesNotDuplicateLoops(t *testing.T) {
+	var calls atomic.Int64
+	j := &fakeJob{name: "job", interval: time.Hour, run: func(context.Context) error {
+		calls.Add(1)
+		return nil
+	}}
+	s := New()
+	s.Register(j, Options{RunAtStart: true})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s.Start(ctx)
+	s.Start(ctx)
+
+	require.Eventually(t, func() bool {
+		return calls.Load() > 0
+	}, 2*time.Second, time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int64(1), calls.Load())
 }
 
 func TestSchedulerCancellationStopsCleanly(t *testing.T) {
