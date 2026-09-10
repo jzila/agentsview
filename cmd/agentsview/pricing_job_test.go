@@ -2,17 +2,16 @@ package main
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/poller"
 	agentsync "go.kenn.io/agentsview/internal/sync"
 )
 
@@ -24,15 +23,31 @@ const pricingResyncTestTimeout = 30 * time.Second
 // catalog requests a refresh makes and records their URLs.
 type pricingCatalogTransport struct {
 	requests chan *http.Request
+	fail     func(*http.Request) bool
 }
 
 func (t pricingCatalogTransport) RoundTrip(
 	req *http.Request,
 ) (*http.Response, error) {
 	t.requests <- req
+	if t.fail != nil && t.fail(req) {
+		return nil, errPricingCatalogTransportFailure
+	}
 	body := `{"data": []}`
 	if strings.HasSuffix(req.URL.Path, "/prices/new_data/v2/data.json") {
-		body = `[]`
+		// A minimal, valid GenAI Prices document. An empty array parses
+		// as "no providers", which pricingrefresh treats as a fetch
+		// error (see pricingrefresh.RefreshIfStale's degraded-catalog
+		// tests); tests here care about the LiteLLM/OpenRouter path.
+		body = `[{
+			"id": "test-provider",
+			"model_match": {"starts_with": "test-model"},
+			"models": [{
+				"id": "test-model",
+				"match": {"equals": "test-model"},
+				"prices": {"input_mtok": 1}
+			}]
+		}]`
 	} else if req.URL.Host == "raw.githubusercontent.com" {
 		body = `{
 			"scheduled-model": {
@@ -48,7 +63,30 @@ func (t pricingCatalogTransport) RoundTrip(
 	}, nil
 }
 
-func TestRunPeriodicPricingRefreshFetchesAfterRecentAttempt(t *testing.T) {
+var errPricingCatalogTransportFailure = &pricingCatalogTransportError{}
+
+type pricingCatalogTransportError struct{}
+
+func (*pricingCatalogTransportError) Error() string {
+	return "simulated pricing catalog transport failure"
+}
+
+func withPricingCatalogTransport(t *testing.T, transport http.RoundTripper) {
+	t.Helper()
+	original := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() {
+		http.DefaultTransport = original
+	})
+}
+
+// TestPricingRefreshJobFetchesEvenAfterRecentInternalAttempt exercises the
+// preserved semantics from the old ticker loop: the Job always
+// force-refreshes (pricingrefresh.RefreshCurrent), regardless of
+// pricingrefresh's own internal "_litellm_last_attempt" cooldown meta-key.
+// The internal/poller Scheduler's own Cooldown (see pricingRefreshJobOptions)
+// is what gates how often the Job is invoked; once invoked, it always fetches.
+func TestPricingRefreshJobFetchesEvenAfterRecentInternalAttempt(t *testing.T) {
 	database := dbtest.OpenTestDB(t)
 	previousAttempt := time.Now().Add(-10 * time.Minute).UTC().Format(
 		time.RFC3339,
@@ -58,36 +96,14 @@ func TestRunPeriodicPricingRefreshFetchesAfterRecentAttempt(t *testing.T) {
 	))
 
 	requests := make(chan *http.Request, 3)
-	originalTransport := http.DefaultTransport
-	http.DefaultTransport = pricingCatalogTransport{requests: requests}
-	t.Cleanup(func() {
-		http.DefaultTransport = originalTransport
-	})
+	withPricingCatalogTransport(t, pricingCatalogTransport{requests: requests})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	ticks := make(chan time.Time, 1)
-	done := make(chan struct{})
-	go func() {
-		runPeriodicPricingRefresh(ctx, ticks, database, nil)
-		close(done)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		require.Eventually(t, func() bool {
-			select {
-			case <-done:
-				return true
-			default:
-				return false
-			}
-		}, time.Second, time.Millisecond)
-	})
+	job := newPricingRefreshJob(database, nil, time.Hour)
+	require.NoError(t, job.Run(context.Background()))
 
-	ticks <- time.Now()
-	require.Eventually(t, func() bool {
-		price, err := database.GetModelPricing("scheduled-model")
-		return err == nil && price != nil
-	}, time.Second, time.Millisecond)
+	price, err := database.GetModelPricing("scheduled-model")
+	require.NoError(t, err)
+	require.NotNil(t, price)
 
 	require.Equal(t,
 		"https://raw.githubusercontent.com/pydantic/genai-prices/main/"+
@@ -108,7 +124,7 @@ func TestRunPeriodicPricingRefreshFetchesAfterRecentAttempt(t *testing.T) {
 	require.NotEqual(t, previousAttempt, currentAttempt)
 }
 
-func TestStartPeriodicPricingRefreshWaitsForResyncSwap(t *testing.T) {
+func TestPricingRefreshJobWaitsForResyncSwap(t *testing.T) {
 	database := dbtest.OpenTestDB(t)
 	engine := agentsync.NewEngine(database, agentsync.EngineConfig{})
 	t.Cleanup(engine.Close)
@@ -145,29 +161,13 @@ func TestStartPeriodicPricingRefreshWaitsForResyncSwap(t *testing.T) {
 	}, pricingResyncTestTimeout, time.Millisecond)
 
 	requests := make(chan *http.Request, 3)
-	originalTransport := http.DefaultTransport
-	http.DefaultTransport = pricingCatalogTransport{requests: requests}
-	t.Cleanup(func() {
-		http.DefaultTransport = originalTransport
-	})
+	withPricingCatalogTransport(t, pricingCatalogTransport{requests: requests})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	refreshDone := make(chan struct{})
+	job := newPricingRefreshJob(database, engine, time.Hour)
+	runDone := make(chan error, 1)
 	go func() {
-		startPeriodicPricingRefresh(ctx, database, engine)
-		close(refreshDone)
+		runDone <- job.Run(context.Background())
 	}()
-	t.Cleanup(func() {
-		cancel()
-		require.Eventually(t, func() bool {
-			select {
-			case <-refreshDone:
-				return true
-			default:
-				return false
-			}
-		}, pricingResyncTestTimeout, time.Millisecond)
-	})
 
 	assert.Never(t, func() bool {
 		return len(requests) > 0
@@ -184,10 +184,18 @@ func TestStartPeriodicPricingRefreshWaitsForResyncSwap(t *testing.T) {
 		}
 	}, pricingResyncTestTimeout, time.Millisecond)
 	require.NoError(t, swapErr)
+
 	require.Eventually(t, func() bool {
-		price, err := database.GetModelPricing("scheduled-model")
-		return err == nil && price != nil
+		select {
+		case <-runDone:
+			return true
+		default:
+			return false
+		}
 	}, pricingResyncTestTimeout, time.Millisecond)
+	price, err := database.GetModelPricing("scheduled-model")
+	require.NoError(t, err)
+	require.NotNil(t, price)
 }
 
 func TestSeedPricingWaitsForResyncSwap(t *testing.T) {
@@ -268,40 +276,47 @@ func TestSeedPricingWaitsForResyncSwap(t *testing.T) {
 	require.NotNil(t, price)
 }
 
-func TestRunPricingRefreshLoopContinuesAfterFailure(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	ticks := make(chan time.Time, 2)
-	done := make(chan struct{})
-	var attempts atomic.Int32
+// TestPricingRefreshJobSchedulerRecordsAndSurvivesFailure is an integration
+// test of the real pricingRefreshJob wired into a real poller.Scheduler
+// through TriggerNow: a first attempt fails (network down), and the
+// Scheduler must record the error without crashing, and a second
+// TriggerNow (which bypasses the job's own Cooldown) must still succeed.
+func TestPricingRefreshJobSchedulerRecordsAndSurvivesFailure(t *testing.T) {
+	database := dbtest.OpenTestDB(t)
 
-	go func() {
-		runPricingRefreshLoop(ctx, ticks, func(context.Context) error {
-			if attempts.Add(1) == 1 {
-				return errors.New("temporary pricing failure")
-			}
-			return nil
-		})
-		close(done)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		require.Eventually(t, func() bool {
-			select {
-			case <-done:
-				return true
-			default:
-				return false
-			}
-		}, time.Second, time.Millisecond)
+	requests := make(chan *http.Request, 30)
+	failing := true
+	withPricingCatalogTransport(t, pricingCatalogTransport{
+		requests: requests,
+		fail:     func(*http.Request) bool { return failing },
 	})
 
-	ticks <- time.Time{}
-	require.Eventually(t, func() bool {
-		return attempts.Load() == 1
-	}, time.Second, time.Millisecond)
+	job := newPricingRefreshJob(database, nil, time.Hour)
+	sched := poller.New()
+	// RunAtStart is disabled for this test: it drives attempts explicitly
+	// via TriggerNow, and a concurrent RunAtStart attempt racing the first
+	// TriggerNow could consume the "failing" transport itself, recording a
+	// second failure before the assertions below run and making
+	// ConsecutiveFailures flaky.
+	opts := pricingRefreshJobOptions()
+	opts.RunAtStart = false
+	sched.Register(job, opts)
 
-	ticks <- time.Time{}
-	require.Eventually(t, func() bool {
-		return attempts.Load() == 2
-	}, time.Second, time.Millisecond)
+	ctx := t.Context()
+	sched.Start(ctx)
+
+	err := sched.TriggerNow(pricingRefreshJobName)
+	require.Error(t, err)
+	statuses := sched.Status()
+	require.Len(t, statuses, 1)
+	assert.NotEmpty(t, statuses[0].LastError)
+	assert.Equal(t, 1, statuses[0].ConsecutiveFailures)
+
+	failing = false
+	err = sched.TriggerNow(pricingRefreshJobName)
+	require.NoError(t, err)
+	statuses = sched.Status()
+	assert.Empty(t, statuses[0].LastError)
+	assert.Equal(t, 0, statuses[0].ConsecutiveFailures)
+	assert.False(t, statuses[0].LastSuccess.IsZero())
 }

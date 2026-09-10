@@ -3,8 +3,32 @@
 Read this file before changing watchers, polling, sync scheduling, or other
 long-running background work. Also read it before investigating memory growth.
 
+## The internal/poller Scheduler
+
+`internal/poller` is the reusable scheduler for interval-driven background jobs
+that hit an external or shared resource on a timer: it owns jitter, a cooldown
+recorded before each attempt (see internal/pricingrefresh, the pattern it
+generalizes), capped exponential backoff on consecutive failures, honoring a
+job's `RetryAfterError`, and context cancellation.
+
+- New interval-driven background work that talks to an external API or a shared
+  resource (vendor usage sources, rate-limited fetches) should register a
+  `poller.Job` with the daemon's Scheduler (`cmd/agentsview/poller_setup.go`)
+  instead of hand-rolling a ticker goroutine.
+
+- Pricing refresh (`cmd/agentsview/pricing_job.go`) runs on the Scheduler
+  today.
+
+- Periodic session sync (`startPeriodicSync`), the semantic-search embedding
+  schedule (`internal/vector`, `[vector.embed]`), and automatic recall
+  extraction (`internal/recall/extract`, `[recall.extract]`) are not yet
+  migrated onto this Scheduler. They have their own timing and backstop logic;
+  moving them is a follow-up, not something to do incidentally while touching
+  an unrelated job.
+
 - Keep passive daemon memory within a few hundred megabytes on macOS, Linux, and
   Windows. Treat sustained growth beyond that range as a regression.
+
 - Bound watcher, polling, and sync work by the changed batch, not the full
   archive. Do not scan or load every stored session for each filesystem event.
 - Declare costly scheduling inputs as provider capabilities. Compute them only

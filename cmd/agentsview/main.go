@@ -457,7 +457,7 @@ func runServe(cfg config.Config, opts serveOptions) {
 		pricingRefreshRunner = engine
 	}
 	seedPricing(database, pricingRefreshRunner)
-	go startPeriodicPricingRefresh(ctx, database, pricingRefreshRunner)
+	setupPollerScheduler(ctx, database, pricingRefreshRunner)
 
 	rtOpts := serveRuntimeOptions{
 		Mode:           "serve",
