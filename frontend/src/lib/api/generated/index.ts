@@ -20,6 +20,7 @@ export * as SessionsService from "./sessions/sessions.ts";
 export * as SettingsService from "./settings/settings.ts";
 export * as StarredService from "./starred/starred.ts";
 export * as SyncService from "./sync/sync.ts";
+export * as SystemService from "./system/system.ts";
 export * as TrendsService from "./trends/trends.ts";
 export * as UsageService from "./usage/usage.ts";
 export * from "./models/index.ts";

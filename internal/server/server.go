@@ -26,6 +26,7 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/insight"
 	"go.kenn.io/agentsview/internal/parser"
+	"go.kenn.io/agentsview/internal/poller"
 	"go.kenn.io/agentsview/internal/postgres"
 	"go.kenn.io/agentsview/internal/pricingrefresh"
 	"go.kenn.io/agentsview/internal/rawsync"
@@ -184,6 +185,12 @@ type Server struct {
 	rawSyncUploads         RawSyncUploads
 
 	ensurePricing func(context.Context, *db.DB) error
+
+	// pollerStatus, when set, backs GET /api/v1/system/pollers with live
+	// internal/poller.Scheduler status. Nil (the default) leaves the
+	// route registered but returning an empty list, e.g. when [poller]
+	// is disabled by config.
+	pollerStatus func() []poller.Status
 }
 
 type insightGenerationOptionsContextKey struct{}
@@ -470,6 +477,13 @@ func WithInsightLogDrainTimeouts(drain, stopWait time.Duration) Option {
 
 func WithIdleTracker(t *IdleTracker) Option {
 	return func(s *Server) { s.idle = t }
+}
+
+// WithPollerStatus wires the internal/poller.Scheduler status provider
+// backing GET /api/v1/system/pollers (fn is typically the Scheduler's own
+// Status method).
+func WithPollerStatus(fn func() []poller.Status) Option {
+	return func(s *Server) { s.pollerStatus = fn }
 }
 
 // WithSessionMutationNotifier registers fn to run after a route changes a

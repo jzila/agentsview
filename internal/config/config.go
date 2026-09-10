@@ -502,6 +502,19 @@ func (c InsightsConfig) APIKey() string {
 	return os.Getenv(strings.TrimSpace(c.APIKeyEnv))
 }
 
+// PollerConfig controls the internal/poller.Scheduler background jobs
+// (currently pricing-refresh and, when configured, cursor-usage). See
+// docs/configuration.md and docs/agents/background-work.md.
+type PollerConfig struct {
+	// Enabled is the master switch for all background poller jobs.
+	// Defaults to true; set to false to disable scheduled polling entirely
+	// (on-demand paths such as `agentsview usage cursor` are unaffected).
+	Enabled bool `json:"enabled" toml:"enabled"`
+	// Intervals overrides a job's default poll interval, keyed by the
+	// job's stable name (e.g. "pricing-refresh", "cursor-usage").
+	Intervals map[string]time.Duration `json:"intervals,omitempty" toml:"intervals"`
+}
+
 // Validate checks endpoint intent and transport safety.
 func (c InsightsConfig) Validate() error {
 	endpoint := strings.TrimSpace(c.Endpoint)
@@ -718,8 +731,15 @@ type Config struct {
 	Recall               RecallConfig           `json:"recall,omitempty" toml:"recall"`
 	Insights             InsightsConfig         `json:"insights,omitempty" toml:"insights"`
 	Automated            AutomatedConfig        `json:"automated,omitempty" toml:"automated"`
+	Poller               PollerConfig           `json:"poller,omitempty" toml:"poller"`
 	Agent                map[string]AgentConfig `json:"agent,omitempty" toml:"agent"`
-	WriteTimeout         time.Duration          `json:"-" toml:"-"`
+	// pollerEnabledFromEnv records that AGENTSVIEW_POLLER_ENABLED set
+	// Poller.Enabled, so a later config.toml [poller] section (loaded
+	// after the environment today) does not silently overwrite it. It is
+	// process-local load state, not persisted configuration; unexported
+	// fields are never marshaled anyway.
+	pollerEnabledFromEnv bool
+	WriteTimeout         time.Duration `json:"-" toml:"-"`
 	// LocalMachineName is the operating-system hostname used to identify
 	// sessions ingested from this machine. It is runtime-derived rather than
 	// persisted configuration so local and remote source labels share the same
@@ -1108,6 +1128,9 @@ func Default() (Config, error) {
 				FailureBackoff:   "1h",
 			},
 		},
+		Poller: PollerConfig{
+			Enabled: true,
+		},
 	}, nil
 }
 
@@ -1494,6 +1517,7 @@ func (c *Config) applyConfigTOML(data string) error {
 		Recall                         RecallConfig           `toml:"recall"`
 		Insights                       InsightsConfig         `toml:"insights"`
 		Automated                      AutomatedConfig        `toml:"automated"`
+		Poller                         PollerConfig           `toml:"poller"`
 		Agent                          map[string]AgentConfig `toml:"agent"`
 		EventsCoalesceInterval         time.Duration          `toml:"events_coalesce_interval"`
 		DaemonIdleTimeout              time.Duration          `toml:"daemon_idle_timeout"`
@@ -1719,6 +1743,18 @@ func (c *Config) applyConfigTOML(data string) error {
 	}
 	if meta.IsDefined("daemon_idle_timeout") {
 		c.DaemonIdleTimeout = file.DaemonIdleTimeout
+	}
+	// IsDefined distinguishes "unset" (leave the default true) from an
+	// explicit "enabled = false". Skip applying the file's value when
+	// AGENTSVIEW_POLLER_ENABLED already set it: loadEnv runs before
+	// loadFile, so without this guard an explicit config.toml value
+	// (even one just restating the default) would silently win over the
+	// documented environment override.
+	if meta.IsDefined("poller", "enabled") && !c.pollerEnabledFromEnv {
+		c.Poller.Enabled = file.Poller.Enabled
+	}
+	if file.Poller.Intervals != nil {
+		c.Poller.Intervals = file.Poller.Intervals
 	}
 	if file.Automated.Prefixes != nil {
 		c.Automated.Prefixes = file.Automated.Prefixes
@@ -1984,6 +2020,10 @@ func (c *Config) loadEnv() {
 				"warning: invalid AGENTSVIEW_ARCHIVE_CONTENT: %v", err,
 			)
 		}
+	}
+	if v := os.Getenv("AGENTSVIEW_POLLER_ENABLED"); v != "" {
+		c.Poller.Enabled = v == "1" || v == "true"
+		c.pollerEnabledFromEnv = true
 	}
 }
 

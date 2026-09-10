@@ -1692,6 +1692,80 @@ func TestLoadFile_DaemonIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadFile_PollerEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]any
+		want bool
+	}{
+		{name: "absent defaults to enabled", data: map[string]any{}, want: true},
+		{
+			name: "explicit false disables",
+			data: map[string]any{"poller": map[string]any{"enabled": false}},
+			want: false,
+		},
+		{
+			name: "explicit true stays enabled",
+			data: map[string]any{"poller": map[string]any{"enabled": true}},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := loadMinimalWithConfig(t, tt.data)
+			assert.Equal(t, tt.want, cfg.Poller.Enabled)
+		})
+	}
+}
+
+func TestLoadFile_PollerIntervalOverrides(t *testing.T) {
+	cfg := loadMinimalWithConfig(t, map[string]any{
+		"poller": map[string]any{
+			"intervals": map[string]any{
+				"pricing-refresh": "12h",
+				"cursor-usage":    "15m",
+			},
+		},
+	})
+	require.Len(t, cfg.Poller.Intervals, 2)
+	assert.Equal(t, 12*time.Hour, cfg.Poller.Intervals["pricing-refresh"])
+	assert.Equal(t, 15*time.Minute, cfg.Poller.Intervals["cursor-usage"])
+}
+
+func TestLoadFile_PollerEnabledEnvOverride(t *testing.T) {
+	t.Setenv("AGENTSVIEW_POLLER_ENABLED", "false")
+	cfg := loadMinimalWithConfig(t, map[string]any{})
+	assert.False(t, cfg.Poller.Enabled)
+}
+
+// TestLoadFile_PollerEnabledEnvWinsOverFile covers the documented
+// precedence between AGENTSVIEW_POLLER_ENABLED and an explicit
+// config.toml [poller] enabled value: loadEnv runs before loadFile, so an
+// explicit file value (even one that only restates the default) must not
+// silently overwrite an env override.
+func TestLoadFile_PollerEnabledEnvWinsOverFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		fileVal bool
+		want    bool
+	}{
+		{name: "env false beats file true", env: "false", fileVal: true, want: false},
+		{name: "env true beats file false", env: "true", fileVal: false, want: true},
+		{name: "env false beats file restating false", env: "false", fileVal: false, want: false},
+		{name: "env true beats file restating true", env: "true", fileVal: true, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AGENTSVIEW_POLLER_ENABLED", tt.env)
+			cfg := loadMinimalWithConfig(t, map[string]any{
+				"poller": map[string]any{"enabled": tt.fileVal},
+			})
+			assert.Equal(t, tt.want, cfg.Poller.Enabled)
+		})
+	}
+}
+
 func TestLoadFile_PGConfig(t *testing.T) {
 	tests := []struct {
 		name   string

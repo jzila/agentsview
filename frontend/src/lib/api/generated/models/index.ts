@@ -292,6 +292,8 @@ export * from "./pingInfo.ts";
 export * from "./pinMessageResponse.ts";
 export * from "./pinRequest.ts";
 export * from "./pinsResponse.ts";
+export * from "./pollersInfo.ts";
+export * from "./pollerStatus.ts";
 export * from "./postApiV1EmbeddingsGenerationsByIdActivateParams.ts";
 export * from "./postApiV1EmbeddingsGenerationsByIdActivatePathParameters.ts";
 export * from "./postApiV1EmbeddingsGenerationsByIdRetireParams.ts";
