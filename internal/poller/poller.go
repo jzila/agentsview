@@ -159,9 +159,22 @@ func (s *Scheduler) jitter(max time.Duration) time.Duration {
 // Register adds a Job to the Scheduler. If the Scheduler is already started
 // (Start has been called), the job's loop starts immediately; otherwise it
 // starts when Start runs.
+//
+// Registering a name that already has a running loop (Start has been called
+// for it) is ignored, logged, and returns without replacing the existing
+// job: replacing the map entry while its original loop kept running would
+// leave that loop's Job and Options orphaned but still executing, invisible
+// to Status and TriggerNow, alongside a second loop for the replacement.
+// Registering the same name twice before Start is unaffected; the later
+// call simply wins, since no loop has started yet.
 func (s *Scheduler) Register(j Job, opts Options) {
 	s.mu.Lock()
 	name := j.Name()
+	if _, exists := s.jobs[name]; exists && s.started {
+		s.mu.Unlock()
+		s.logf("poller: %q is already registered and running; ignoring duplicate Register", name)
+		return
+	}
 	rj := &job{
 		j:       j,
 		opts:    opts,
@@ -184,9 +197,16 @@ func (s *Scheduler) Register(j Job, opts Options) {
 
 // Start spawns each registered job's loop. It returns immediately; job loops
 // stop once ctx is canceled. A job registered after Start starts immediately
-// (see Register).
+// (see Register). A second call to Start is ignored and logged: every
+// already-registered job already has a running loop, so spawning another
+// round would run each job's loop twice.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		s.logf("poller: Start called more than once; ignoring")
+		return
+	}
 	s.started = true
 	s.ctx = ctx
 	jobs := make([]*job, 0, len(s.jobs))
@@ -315,6 +335,11 @@ func (s *Scheduler) delayUntil(next time.Time) time.Duration {
 	return d
 }
 
+// initialDelay picks the delay before a job's first attempt and, unless
+// RunAtStart fires it immediately, records that decision in Status.NextRun
+// so a caller reading Status before the first attempt completes still sees
+// when the job is scheduled to run next, rather than a zero value for the
+// whole first interval.
 func (s *Scheduler) initialDelay(rj *job) time.Duration {
 	rj.mu.Lock()
 	status := rj.status
@@ -325,7 +350,10 @@ func (s *Scheduler) initialDelay(rj *job) time.Duration {
 	if rj.opts.RunAtStart {
 		return 0
 	}
-	return rj.j.Interval() + s.jitter(rj.opts.Jitter)
+	delay := rj.j.Interval() + s.jitter(rj.opts.Jitter)
+	status.NextRun = s.clock.Now().Add(delay)
+	s.setStatus(rj, status)
+	return delay
 }
 
 // attempt runs one Job.Run call, unless Cooldown gates it, and updates

@@ -63,8 +63,10 @@ func (j *pricingRefreshJob) Run(ctx context.Context) error {
 // job: RunAtStart preserves the previous behavior of refreshing immediately
 // on daemon startup (in addition to seedPricing's synchronous fallback
 // seed), and Cooldown mirrors internal/pricingrefresh.RefreshCooldown so a
-// restart shortly after a refresh (or a TriggerNow) does not immediately
-// force another one.
+// scheduled tick shortly after a refresh does not immediately force
+// another one. It gates only the steady-tick path: an explicit TriggerNow
+// bypasses it by design, and status is in-memory only, so a daemon restart
+// always refreshes again on startup regardless of Cooldown.
 func pricingRefreshJobOptions() poller.Options {
 	return poller.Options{
 		Jitter:     pricingRefreshJobJitter,
