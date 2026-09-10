@@ -96,7 +96,7 @@ export type GetApiV1UsageTopSessionsParams = {
    */
   limit?: number;
   /**
-   * Rank sessions by cost or selected token types
+   * Rank sessions by cost, selected token types, or estimated energy
    */
   sort?: GetApiV1UsageTopSessionsSort;
   /**

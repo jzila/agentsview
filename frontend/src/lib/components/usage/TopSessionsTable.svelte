@@ -5,6 +5,8 @@
   import { formatAgentName, truncate } from "../../utils/format.js";
   import { m } from "../../i18n/index.js";
   import { formatMoney } from "../../money.js";
+  import { formatEnergyStatus, energyStatusTitle } from "../../energy.js";
+  import EnergyEstimateMark from "../shared/EnergyEstimateMark.svelte";
   import {
     ALL_TOKEN_TYPES,
     sumSelectedTokens,
@@ -15,7 +17,11 @@
   }
 
   const isTokenMode = $derived(usage.mode === "token");
+  const isEnergyMode = $derived(usage.mode === "energy");
   const sessions = $derived(usage.topSessions ?? []);
+  const totalEnergyMicroWh = $derived(
+    sessions.reduce((sum, row) => sum + row.energyMicroWh, 0),
+  );
 
   function selectedTokenLabel(): string {
     if (usage.selectedTokenTypes.length === ALL_TOKEN_TYPES.length) {
@@ -40,11 +46,16 @@
 
 <div class="top-sessions-container">
   <h3 class="chart-title">
-    {isTokenMode
-      ? m.usage_top_sessions_by_selected_tokens({
-          tokenTypes: selectedTokenLabel(),
-        })
-      : m.usage_top_sessions_by_cost()}
+    {isEnergyMode
+      ? m.usage_top_sessions_by_energy()
+      : isTokenMode
+        ? m.usage_top_sessions_by_selected_tokens({
+            tokenTypes: selectedTokenLabel(),
+          })
+        : m.usage_top_sessions_by_cost()}
+    {#if isEnergyMode}
+      <EnergyEstimateMark microWh={totalEnergyMicroWh} />
+    {/if}
   </h3>
 
   {#if usage.errors.topSessions}
@@ -85,7 +96,11 @@
                 : row.totalTokens,
             )}
           </span>
-          {#if !isTokenMode}
+          {#if isEnergyMode}
+            <span class="session-cost" title={energyStatusTitle(row.energyMicroWh, row.energyStatus)}>
+              {formatEnergyStatus(row.energyMicroWh, row.energyStatus)}
+            </span>
+          {:else if !isTokenMode}
             <span class="session-cost">
               {formatMoney(row.cost)}
             </span>

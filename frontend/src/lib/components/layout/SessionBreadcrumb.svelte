@@ -58,7 +58,10 @@
   import { messages as messagesStore } from "../../stores/messages.svelte.js";
   import { formatModelEffort } from "../../utils/model.js";
   import { ui } from "../../stores/ui.svelte.js";
+  import { usage } from "../../stores/usage.svelte.js";
   import { m } from "../../i18n/index.js";
+  import { formatEnergyStatus, energyStatusTitle } from "../../energy.js";
+  import EnergyEstimateMark from "../shared/EnergyEstimateMark.svelte";
 
   interface Props {
     session: Session | undefined;
@@ -101,6 +104,8 @@
     cache_read_input_tokens: number;
     cost: Money;
     has_cost: boolean;
+    energy_micro_wh: number;
+    energy_status?: string;
   }
 
   onMount(() => {
@@ -160,6 +165,15 @@
   let sessionCost = $state<Money | null>(null);
   let sessionCostIsRollup = $state(false);
   let sessionRollupSubagentCount = $state(0);
+  // Energy has no rollup story (unlike cost): SessionUsageResponse always
+  // reports one energy_micro_wh figure for the queried session. null means
+  // "not fetched yet, or the last fetch failed" -- matching sessionCost's
+  // own null-means-unknown convention -- so an empty sessionEnergyStatus
+  // ("" is the default before a request even starts, and status is never
+  // reset on a fetch failure below) is never mistaken for a genuine
+  // zero-energy answer and shown as a misleading "0 Wh" badge.
+  let sessionEnergyMicroWh = $state<number | null>(null);
+  let sessionEnergyStatus = $state("");
   let sessionUsageBreakdownCount = $state(0);
   let sessionUsageBreakdown = $state<SessionUsageBreakdownEntry[]>([]);
   // Key of the last successful usage fetch. Cost depends on more
@@ -221,6 +235,8 @@
       sessionCost = null;
       sessionCostIsRollup = false;
       sessionRollupSubagentCount = 0;
+      sessionEnergyMicroWh = null;
+      sessionEnergyStatus = "";
       resetUsageBreakdown();
       costFetchKey = null;
       costSessionId = null;
@@ -236,6 +252,8 @@
       sessionCost = null;
       sessionCostIsRollup = false;
       sessionRollupSubagentCount = 0;
+      sessionEnergyMicroWh = null;
+      sessionEnergyStatus = "";
       resetUsageBreakdown();
       costFetchKey = null;
     }
@@ -257,6 +275,8 @@
           : res.has_cost
             ? res.cost
             : null;
+        sessionEnergyMicroWh = res.energy_micro_wh ?? 0;
+        sessionEnergyStatus = res.energy_status ?? "";
         sessionUsageBreakdownCount = res.breakdown_count ?? 0;
       })
       .catch((e) => {
@@ -309,6 +329,7 @@
     breakdownRead.cancel();
   });
 
+  let isEnergyMode = $derived(usage.mode === "energy");
   let sessionCostLabel = $derived(
     sessionCost !== null ? formatCost(sessionCost) : null,
   );
@@ -319,6 +340,32 @@
           countLabel: sessionRollupSubagentCount.toLocaleString(),
         })
       : m.session_breadcrumb_estimated_session_cost(),
+  );
+  // A non-empty status means a fetch completed and at least attempted an
+  // estimate (energy_status "" + energy_micro_wh 0 means no estimate was
+  // ever computed -- nothing to aggregate -- and stays hidden, the same
+  // "no data yet" treatment sessionCostLabel gives a null sessionCost).
+  // Once a status exists, formatEnergyStatus renders all three cases the
+  // same way every other energy-mode surface does: "n/a" for a wholly
+  // unpriced session, a partial-marked sum for a mixed one, and the plain
+  // value otherwise -- so a fully unpriced session no longer reads as an
+  // ordinary (hidden, effectively silent) zero.
+  let sessionEnergyLabel = $derived(
+    sessionEnergyMicroWh !== null && sessionEnergyStatus !== ""
+      ? formatEnergyStatus(sessionEnergyMicroWh, sessionEnergyStatus)
+      : null,
+  );
+  // Displayed badge value/title: energy mode swaps in the estimated-energy
+  // figure in place of cost; cost and token modes keep the existing cost
+  // badge unchanged.
+  let displayBadgeLabel = $derived(
+    isEnergyMode ? sessionEnergyLabel : sessionCostLabel,
+  );
+  let displayBadgeTitle = $derived(
+    isEnergyMode
+      ? (energyStatusTitle(sessionEnergyMicroWh ?? 0, sessionEnergyStatus) ??
+          m.session_breadcrumb_estimated_session_energy())
+      : sessionCostTitle,
   );
   // Menu rows render only while open, so the collapsed dropdown
   // stays DOM-free.
@@ -392,7 +439,11 @@
       `${formatBreakdownContext(entry)} ctx`,
       `${formatTokenCount(entry.output_tokens)} out`,
     ];
-    if (entry.has_cost) {
+    if (isEnergyMode) {
+      if (entry.energy_status !== "no_rate") {
+        parts.push(formatEnergyStatus(entry.energy_micro_wh, entry.energy_status ?? ""));
+      }
+    } else if (entry.has_cost) {
       parts.push(formatCost(entry.cost));
     }
     return parts.filter(Boolean).join(" · ");
@@ -1027,7 +1078,13 @@
                     <span aria-hidden="true">/</span>
                     {formatTokenCount(row.output_tokens)} out
                   </span>
-                  {#if row.has_cost}
+                  {#if isEnergyMode}
+                    {#if row.energy_status !== "no_rate"}
+                      <span class="usage-breakdown-cost">
+                        {formatEnergyStatus(row.energy_micro_wh, row.energy_status ?? "")}
+                      </span>
+                    {/if}
+                  {:else if row.has_cost}
                     <span class="usage-breakdown-cost">
                       {formatCost(row.cost)}
                     </span>
@@ -1039,12 +1096,15 @@
           {/if}
         </details>
       {/if}
-      {#if sessionCostLabel}
-        <span class="cost-badge" title={sessionCostTitle}>
-          {#if sessionCostIsRollup}
-            {m.session_breadcrumb_total_cost()}: {sessionCostLabel}
+      {#if displayBadgeLabel}
+        <span class="cost-badge" title={displayBadgeTitle}>
+          {#if isEnergyMode}
+            {displayBadgeLabel}
+            <EnergyEstimateMark microWh={sessionEnergyMicroWh ?? 0} />
+          {:else if sessionCostIsRollup}
+            {m.session_breadcrumb_total_cost()}: {displayBadgeLabel}
           {:else}
-            {sessionCostLabel}
+            {displayBadgeLabel}
           {/if}
         </span>
       {/if}

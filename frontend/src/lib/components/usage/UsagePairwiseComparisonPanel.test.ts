@@ -20,6 +20,7 @@ function usageSummary(): UsageSummaryResponse {
       cacheReadTokens: 0,
       totalCost: testMoney(99.99),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: [],
     projectTotals: [
@@ -31,6 +32,7 @@ function usageSummary(): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(10),
+        energyMicroWh: 0, energyStatus: "",
       },
       {
         project_key: "pl1:sha256:beta",
@@ -40,6 +42,7 @@ function usageSummary(): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(8),
+        energyMicroWh: 0, energyStatus: "",
       },
     ],
     modelTotals: [
@@ -50,6 +53,7 @@ function usageSummary(): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(10),
+        energyMicroWh: 0, energyStatus: "",
       },
       {
         model: "gpt-4o",
@@ -58,6 +62,7 @@ function usageSummary(): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(8),
+        energyMicroWh: 0, energyStatus: "",
       },
     ],
     agentTotals: [],
@@ -89,6 +94,7 @@ function pairwiseComparison(): ServiceUsagePairwiseComparisonResponse {
       sessionCount: 2,
       costPerSession: testMoney(2),
       tokensPerSession: 150,
+      energyMicroWh: 0, energyStatus: "",
     },
     right: {
       totalCost: testMoney(5.5),
@@ -100,6 +106,7 @@ function pairwiseComparison(): ServiceUsagePairwiseComparisonResponse {
       sessionCount: 1,
       costPerSession: testMoney(5.5),
       tokensPerSession: 150,
+      energyMicroWh: 0, energyStatus: "",
     },
     deltas: {
       totalCostDelta: testMoney(1.5),
@@ -120,6 +127,7 @@ function pairwiseComparison(): ServiceUsagePairwiseComparisonResponse {
       costPerSessionRatio: 1.75,
       tokensPerSessionDelta: 0,
       tokensPerSessionRatio: 0,
+      energyMicroWhDelta: 0, energyMicroWhDeltaRatio: null,
     },
   };
 }
@@ -231,4 +239,46 @@ describe("UsagePairwiseComparisonPanel", () => {
 
     unmount(component);
   });
+
+  it.each([
+    [
+      "both sides priced",
+      { energyMicroWh: 40_000_000 },
+      { energyMicroWh: 25_000_000 },
+      { energyMicroWhDelta: -15_000_000, energyMicroWhDeltaRatio: -0.375 },
+      ["Total Energy", "40 Wh", "25 Wh", "-15 Wh -37.5%"],
+      false,
+    ],
+    [
+      // The misleading -100% is withheld, not shown, for an unpriced side.
+      "right side unpriced",
+      { energyMicroWh: 40_000_000, energyStatus: "ok" },
+      { energyMicroWh: 0, energyStatus: "no_rate" },
+      { energyMicroWhDelta: -40_000_000, energyMicroWhDeltaRatio: -1 },
+      ["Total Energy", "40 Wh", "0 Wh*", "-40 Wh None"],
+      true,
+    ],
+  ] as const)(
+    "compares estimated energy in energy mode (%s)",
+    async (_label, left, right, deltas, wantCells, wantRightTitle) => {
+      usage.mode = "energy";
+      const base = pairwiseComparison();
+      usage.pairwiseComparison = {
+        ...base,
+        left: { ...base.left, ...left },
+        right: { ...base.right, ...right },
+        deltas: { ...base.deltas, ...deltas },
+      };
+      const component = mount(UsagePairwiseComparisonPanel, { target: document.body });
+      await tick();
+
+      expect(document.querySelector("h2")?.textContent).toContain("Comparative Energy Analysis");
+      const cells = Array.from(document.querySelectorAll("tbody tr")[0]?.querySelectorAll("th, td") ?? [])
+        .map((cell) => cell.textContent?.replace(/\s+/g, " ").trim());
+      expect(cells).toEqual(wantCells);
+      const rightCell = document.querySelectorAll("tbody tr td")[1];
+      expect(!!rightCell?.getAttribute("title")).toBe(wantRightTitle);
+      unmount(component);
+    },
+  );
 });

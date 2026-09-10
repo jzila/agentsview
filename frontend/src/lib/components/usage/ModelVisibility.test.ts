@@ -75,6 +75,7 @@ function summary(excluded = ""): UsageSummaryResponse {
       cacheReadTokens: 0,
       totalCost: testMoney(6),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: [],
     projectTotals: [],
@@ -88,6 +89,7 @@ function summary(excluded = ""): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(3 - index),
+        energyMicroWh: 0, energyStatus: "",
       })),
     sessionCounts: { total: 3, byProject: {}, byAgent: {} },
     cacheStats: {

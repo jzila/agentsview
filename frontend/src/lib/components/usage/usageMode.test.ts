@@ -8,6 +8,7 @@ describe("usageModeFromParams", () => {
     [{ view: "cost" }, "cost"],
     [{ view: "unknown" }, "cost"],
     [{ view: "tokens" }, "token"],
+    [{ view: "energy" }, "energy"],
   ] as const)("maps %o to %s", (params, expected) => {
     expect(usageModeFromParams(params)).toBe(expected);
   });
@@ -20,6 +21,13 @@ describe("withUsageMode", () => {
       window_days: "30",
       desktop: "",
       view: "tokens",
+    });
+  });
+
+  it("adds energy mode without dropping filters", () => {
+    expect(withUsageMode({ project: "demo" }, "energy")).toEqual({
+      project: "demo",
+      view: "energy",
     });
   });
 

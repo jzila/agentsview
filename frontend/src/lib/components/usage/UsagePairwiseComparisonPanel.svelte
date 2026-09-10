@@ -5,6 +5,8 @@
   import type { UsagePairwiseDimension } from "../../api/types/usage.js";
   import type { Money } from "../../money.js";
   import { formatMoney, formatSignedMoney } from "../../money.js";
+  import { formatEnergy } from "../../energy.js";
+  import EnergyEstimateMark from "../shared/EnergyEstimateMark.svelte";
   import { sumSelectedTokens } from "../../stores/usageTokenTypes.js";
 
   function fmtCount(value: number): string {
@@ -59,6 +61,21 @@
     return fmtSignedTokens(value);
   }
 
+  function fmtSignedEnergy(value: number): string {
+    const prefix = value >= 0 ? "+" : "-";
+    return `${prefix}${formatEnergy(Math.abs(value))}`;
+  }
+
+  function fmtMaybeEnergy(value: number | null | undefined): string {
+    if (value == null) return m.shared_none();
+    return formatEnergy(value);
+  }
+
+  function fmtMaybeSignedEnergy(value: number | null | undefined): string {
+    if (value == null) return m.shared_none();
+    return fmtSignedEnergy(value);
+  }
+
   function optionsFor(dimension: UsagePairwiseDimension): string[] {
     return dimension === "project"
       ? usage.pairwiseProjectOptions
@@ -94,6 +111,7 @@
   ]);
 
   const isTokenMode = $derived(usage.mode === "token");
+  const isEnergyMode = $derived(usage.mode === "energy");
 
   type MetricRow = {
     label: string;
@@ -101,6 +119,9 @@
     right: string;
     delta: string;
     ratio: string;
+    leftTitle?: string;
+    rightTitle?: string;
+    ratioTitle?: string;
   };
 
   const hasSelection = $derived(
@@ -111,6 +132,75 @@
   const rows = $derived.by((): MetricRow[] => {
     const comparison = usage.pairwiseComparison;
     if (!comparison) return [];
+
+    if (isEnergyMode) {
+      const leftPartial = comparison.left.energyStatus === "no_rate";
+      const rightPartial = comparison.right.energyStatus === "no_rate";
+      const eitherPartial = leftPartial || rightPartial;
+      const partialTitle = m.usage_energy_partial_title();
+      const leftPerSession = comparison.left.sessionCount > 0
+        ? comparison.left.energyMicroWh / comparison.left.sessionCount
+        : null;
+      const rightPerSession = comparison.right.sessionCount > 0
+        ? comparison.right.energyMicroWh / comparison.right.sessionCount
+        : null;
+      const perSessionDelta =
+        leftPerSession === null || rightPerSession === null
+          ? null
+          : rightPerSession - leftPerSession;
+      const perSessionRatio =
+        leftPerSession === null || leftPerSession === 0 ||
+          perSessionDelta === null
+          ? null
+          : perSessionDelta / leftPerSession;
+      return [
+        {
+          label: m.usage_total_energy(),
+          left: formatEnergy(comparison.left.energyMicroWh) + (leftPartial ? "*" : ""),
+          right: formatEnergy(comparison.right.energyMicroWh) + (rightPartial ? "*" : ""),
+          delta: fmtSignedEnergy(comparison.deltas.energyMicroWhDelta),
+          // A side missing some of its rate data makes the percentage
+          // difference between the two totals meaningless (an unpriced side
+          // reads as a much smaller total than it really represents), so it
+          // is withheld rather than shown as a precise-looking number.
+          ratio: eitherPartial ? m.shared_none() : fmtRatio(comparison.deltas.energyMicroWhDeltaRatio),
+          leftTitle: leftPartial ? partialTitle : undefined,
+          rightTitle: rightPartial ? partialTitle : undefined,
+          ratioTitle: eitherPartial ? partialTitle : undefined,
+        },
+        {
+          label: m.analytics_col_sessions(),
+          left: fmtCount(comparison.left.sessionCount),
+          right: fmtCount(comparison.right.sessionCount),
+          delta: fmtSignedCount(comparison.deltas.sessionCountDelta),
+          ratio: fmtRatio(comparison.deltas.sessionCountDeltaRatio),
+        },
+        {
+          label: m.usage_pairwise_energy_per_session(),
+          left: fmtMaybeEnergy(leftPerSession) + (leftPartial ? "*" : ""),
+          right: fmtMaybeEnergy(rightPerSession) + (rightPartial ? "*" : ""),
+          delta: fmtMaybeSignedEnergy(perSessionDelta),
+          ratio: eitherPartial ? m.shared_none() : fmtRatio(perSessionRatio),
+          leftTitle: leftPartial ? partialTitle : undefined,
+          rightTitle: rightPartial ? partialTitle : undefined,
+          ratioTitle: eitherPartial ? partialTitle : undefined,
+        },
+        {
+          label: m.usage_input_tokens(),
+          left: fmtTokens(comparison.left.inputTokens),
+          right: fmtTokens(comparison.right.inputTokens),
+          delta: fmtSignedTokens(comparison.deltas.inputTokensDelta),
+          ratio: fmtRatio(comparison.deltas.inputTokensDeltaRatio),
+        },
+        {
+          label: m.analytics_metric_output_tokens(),
+          left: fmtTokens(comparison.left.outputTokens),
+          right: fmtTokens(comparison.right.outputTokens),
+          delta: fmtSignedTokens(comparison.deltas.outputTokensDelta),
+          ratio: fmtRatio(comparison.deltas.outputTokensDeltaRatio),
+        },
+      ];
+    }
 
     if (isTokenMode) {
       const leftTokens = sumSelectedTokens(
@@ -236,8 +326,26 @@
 <section class="pairwise-panel">
   <div class="panel-header">
     <div>
-      <h2>{isTokenMode ? m.usage_pairwise_tokens_title() : m.usage_pairwise_title()}</h2>
-      <p>{isTokenMode ? m.usage_pairwise_tokens_subtitle() : m.usage_pairwise_subtitle()}</p>
+      <h2>
+        {isEnergyMode
+          ? m.usage_pairwise_energy_title()
+          : isTokenMode
+            ? m.usage_pairwise_tokens_title()
+            : m.usage_pairwise_title()}
+        {#if isEnergyMode}
+          <EnergyEstimateMark
+            microWh={(usage.pairwiseComparison?.left.energyMicroWh ?? 0) +
+              (usage.pairwiseComparison?.right.energyMicroWh ?? 0)}
+          />
+        {/if}
+      </h2>
+      <p>
+        {isEnergyMode
+          ? m.usage_pairwise_energy_subtitle()
+          : isTokenMode
+            ? m.usage_pairwise_tokens_subtitle()
+            : m.usage_pairwise_subtitle()}
+      </p>
     </div>
   </div>
 
@@ -368,12 +476,12 @@
           {#each rows as row}
             <tr>
               <th>{row.label}</th>
-              <td>{row.left}</td>
-              <td>{row.right}</td>
+              <td title={row.leftTitle}>{row.left}</td>
+              <td title={row.rightTitle}>{row.right}</td>
               <td>
                 <div class="delta-cell">
                   <span>{row.delta}</span>
-                  <span class="ratio">{row.ratio}</span>
+                  <span class="ratio" title={row.ratioTitle}>{row.ratio}</span>
                 </div>
               </td>
             </tr>

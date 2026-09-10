@@ -36,6 +36,7 @@ function summaryWithAgents(agents: string[]): UsageSummaryResponse {
       cacheReadTokens: 0,
       totalCost: testMoney(12),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: [],
     projectTotals: [],
@@ -47,6 +48,7 @@ function summaryWithAgents(agents: string[]): UsageSummaryResponse {
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       cost: testMoney(8 - i * 4),
+      energyMicroWh: 0, energyStatus: "",
     })),
     sessionCounts: { total: 2, byProject: {}, byAgent: {} },
     cacheStats: {
@@ -71,6 +73,7 @@ function summaryWithDuplicateProjectLabels(): UsageSummaryResponse {
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       cost: testMoney(8),
+      energyMicroWh: 0, energyStatus: "",
     },
     {
       project_key: "pl1:sha256:second",
@@ -80,6 +83,7 @@ function summaryWithDuplicateProjectLabels(): UsageSummaryResponse {
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       cost: testMoney(4),
+      energyMicroWh: 0, energyStatus: "",
     },
   ];
   return summary;
@@ -95,6 +99,7 @@ function summaryWithModels(): UsageSummaryResponse {
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       cost: testMoney(8),
+      energyMicroWh: 0, energyStatus: "",
     },
     {
       model: "claude-opus-5",
@@ -103,6 +108,7 @@ function summaryWithModels(): UsageSummaryResponse {
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       cost: testMoney(4),
+      energyMicroWh: 0, energyStatus: "",
     },
   ];
   return summary;
@@ -400,6 +406,43 @@ describe("AttributionPanel colors", () => {
     expect(value).not.toContain("$");
     unmount(component);
   });
+
+  it("formats treemap and title values as Wh in energy mode", async () => {
+    const summary = summaryWithAgents(["codex"]);
+    Object.assign(summary.agentTotals[0]!, { energyMicroWh: 45_000_000, energyStatus: "ok" });
+    usage.summary = summary;
+    usage.mode = "energy";
+    usage.toggles.attribution.groupBy = "agent";
+    usage.toggles.attribution.view = "treemap";
+
+    const component = mountPanel();
+    await tick();
+
+    expect(document.querySelector(".chart-title")?.textContent).toContain("Energy Attribution");
+    expect(document.querySelector(".tile-value")?.textContent?.trim()).toBe("45 Wh");
+    unmount(component);
+  });
+
+  it.each([
+    ["no_rate, partial", 12_000_000, "no_rate", "12 Wh~"],
+    ["no_rate, wholly unpriced", 0, "no_rate", "n/a"],
+  ] as const)(
+    "carries energyStatus through list rows instead of reducing to a bare number (status=%s)",
+    async (_case, energyMicroWh, energyStatus, want) => {
+      const summary = summaryWithAgents(["codex"]);
+      Object.assign(summary.agentTotals[0]!, { energyMicroWh, energyStatus });
+      usage.summary = summary;
+      usage.mode = "energy";
+      usage.toggles.attribution.groupBy = "agent";
+      usage.toggles.attribution.view = "list";
+
+      const component = mountPanel();
+      await tick();
+
+      expect(document.querySelector(".list-cost")?.textContent?.trim()).toBe(want);
+      unmount(component);
+    },
+  );
 
   it("attributes only output tokens when Output is selected", async () => {
     const summary = summaryWithAgents(["codex"]);

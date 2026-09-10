@@ -93,6 +93,7 @@ const usageServiceMocks = vi.hoisted(() => {
         sessionCount: 1,
         costPerSession: money(1),
         tokensPerSession: 15,
+        energyMicroWh: 0, energyStatus: "",
       },
       right: {
         totalCost: money(2),
@@ -104,6 +105,7 @@ const usageServiceMocks = vi.hoisted(() => {
         sessionCount: 2,
         costPerSession: money(1),
         tokensPerSession: 15,
+        energyMicroWh: 0, energyStatus: "",
       },
       deltas: {
         totalCostDelta: money(1),
@@ -124,6 +126,7 @@ const usageServiceMocks = vi.hoisted(() => {
         costPerSessionRatio: 0,
         tokensPerSessionDelta: 0,
         tokensPerSessionRatio: 0,
+        energyMicroWhDelta: 0, energyMicroWhDeltaRatio: null,
       },
     }),
     getApiV1UsageTopSessions: vi.fn().mockResolvedValue([]),
@@ -174,6 +177,7 @@ function topSession(sessionId: string): DbTopSessionEntry {
     cacheReadTokens: 0,
     totalTokens: 125,
     cost: testMoney(1),
+    energyMicroWh: 0, energyStatus: "",
   };
 }
 
@@ -216,6 +220,7 @@ function usageSummary(totalCost = 0): UsageSummaryResponse {
       cacheReadTokens: 0,
       totalCost: testMoney(totalCost),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: [],
     projectTotals: [
@@ -227,6 +232,7 @@ function usageSummary(totalCost = 0): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(0),
+        energyMicroWh: 0, energyStatus: "",
       },
       {
         project_key: "pl1:sha256:beta",
@@ -236,6 +242,7 @@ function usageSummary(totalCost = 0): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(0),
+        energyMicroWh: 0, energyStatus: "",
       },
     ],
     modelTotals: [
@@ -246,6 +253,7 @@ function usageSummary(totalCost = 0): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(0),
+        energyMicroWh: 0, energyStatus: "",
       },
       {
         model: "gpt-4o",
@@ -254,6 +262,7 @@ function usageSummary(totalCost = 0): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(0),
+        energyMicroWh: 0, energyStatus: "",
       },
     ],
     agentTotals: [],
@@ -303,6 +312,7 @@ function usageSummaryWithOptions(
       cacheReadTokens: 0,
       totalCost: testMoney(totalCost),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: [],
     projectTotals: projects.map((project) => ({
@@ -313,6 +323,7 @@ function usageSummaryWithOptions(
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       cost: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     })),
     modelTotals: models.map((model) => ({
       model,
@@ -321,6 +332,7 @@ function usageSummaryWithOptions(
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       cost: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     })),
     agentTotals: [],
     sessionCounts: {
@@ -351,6 +363,7 @@ function usagePairwiseComparison(): ServiceUsagePairwiseComparisonResponse {
       sessionCount: 1,
       costPerSession: testMoney(1),
       tokensPerSession: 15,
+      energyMicroWh: 0, energyStatus: "",
     },
     right: {
       totalCost: testMoney(2),
@@ -362,6 +375,7 @@ function usagePairwiseComparison(): ServiceUsagePairwiseComparisonResponse {
       sessionCount: 2,
       costPerSession: testMoney(1),
       tokensPerSession: 15,
+      energyMicroWh: 0, energyStatus: "",
     },
     deltas: {
       totalCostDelta: testMoney(1),
@@ -382,6 +396,7 @@ function usagePairwiseComparison(): ServiceUsagePairwiseComparisonResponse {
       costPerSessionRatio: 0,
       tokensPerSessionDelta: 0,
       tokensPerSessionRatio: 0,
+      energyMicroWhDelta: 0, energyMicroWhDeltaRatio: null,
     },
   };
 }
@@ -563,6 +578,15 @@ describe("UsageStore session filter params", () => {
         sort: "tokens",
         token_types: "output",
       }),
+    );
+  });
+
+  it("requests top sessions sorted by energy in energy mode", async () => {
+    const { usage } = await loadStore();
+    usage.mode = "energy";
+    await usage.fetchTopSessions();
+    expect(usageServiceMocks.getApiV1UsageTopSessions.mock.lastCall?.[0]).toEqual(
+      expect.objectContaining({ sort: "energy" }),
     );
   });
 
@@ -1493,6 +1517,7 @@ describe("UsageStore time-series range selection", () => {
         cacheCreationTokens: 2,
         cacheReadTokens: 3,
         totalCost: testMoney(1),
+        energyMicroWh: 0, energyStatus: "",
         modelsUsed: ["model-a"],
         projectBreakdowns: [
           {
@@ -1503,6 +1528,7 @@ describe("UsageStore time-series range selection", () => {
             cacheCreationTokens: 2,
             cacheReadTokens: 3,
             cost: testMoney(1),
+            energyMicroWh: 0, energyStatus: "",
           },
         ],
         modelBreakdowns: [],
@@ -1516,6 +1542,7 @@ describe("UsageStore time-series range selection", () => {
         cacheCreationTokens: 4,
         cacheReadTokens: 6,
         totalCost: testMoney(2),
+        energyMicroWh: 0, energyStatus: "",
         modelsUsed: ["model-a"],
         projectBreakdowns: [
           {
@@ -1526,6 +1553,7 @@ describe("UsageStore time-series range selection", () => {
             cacheCreationTokens: 4,
             cacheReadTokens: 6,
             cost: testMoney(2),
+            energyMicroWh: 0, energyStatus: "",
           },
         ],
         modelBreakdowns: [],
@@ -1539,6 +1567,7 @@ describe("UsageStore time-series range selection", () => {
         cacheCreationTokens: 6,
         cacheReadTokens: 9,
         totalCost: testMoney(3),
+        energyMicroWh: 0, energyStatus: "",
         modelsUsed: ["model-b"],
         projectBreakdowns: [
           {
@@ -1549,6 +1578,7 @@ describe("UsageStore time-series range selection", () => {
             cacheCreationTokens: 6,
             cacheReadTokens: 9,
             cost: testMoney(3),
+            energyMicroWh: 0, energyStatus: "",
           },
         ],
         modelBreakdowns: [],

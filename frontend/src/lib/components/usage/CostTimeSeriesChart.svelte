@@ -3,9 +3,11 @@
   import { Button } from "@kenn-io/kit-ui";
   import { scaleBand, scalePoint } from "d3-scale";
   import LargeChartFrame from "../shared/LargeChartFrame.svelte";
+  import EnergyEstimateMark from "../shared/EnergyEstimateMark.svelte";
   import { usage, type GroupBy } from "../../stores/usage.svelte.js";
   import { formatDateTime, m } from "../../i18n/index.js";
   import { formatMoney, moneyFromMicrodollars } from "../../money.js";
+  import { formatEnergy, formatEnergyStatus, combineEnergyStatus } from "../../energy.js";
   import { sumSelectedTokens } from "../../stores/usageTokenTypes.js";
 
   interface Props {
@@ -27,6 +29,12 @@
     date: string;
     time: number;
     values: Record<string, number>;
+    /** Per-key energyStatus in energy mode ("" in cost/token mode or for a
+     * key with no unpriced constituent), combined across whatever rows fed
+     * that key's value -- so a bucket that mixes priced and unpriced
+     * models, or is entirely unpriced, keeps its status through the
+     * top-N/"Other" grouping instead of being reduced to a bare number. */
+    statuses: Record<string, string>;
   }
 
   function dateTime(date: string): number {
@@ -35,10 +43,13 @@
 
   const groupBy = $derived(usage.toggles.timeSeries.groupBy);
   const isTokenMode = $derived(usage.mode === "token");
+  const isEnergyMode = $derived(usage.mode === "energy");
   const chartTitle = $derived(
-    isTokenMode
-      ? m.usage_tokens_over_time_title()
-      : m.usage_cost_over_time_title(),
+    isEnergyMode
+      ? m.usage_energy_over_time_title()
+      : isTokenMode
+        ? m.usage_tokens_over_time_title()
+        : m.usage_cost_over_time_title(),
   );
 
   function breakdownTokens(b: {
@@ -48,6 +59,25 @@
     cacheReadTokens: number;
   }): number {
     return sumSelectedTokens(b, usage.selectedTokenTypes);
+  }
+
+  function metricValue(
+    b: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheCreationTokens: number;
+      cacheReadTokens: number;
+      energyMicroWh: number;
+    },
+    costMicrodollars: number,
+  ): number {
+    if (isEnergyMode) return b.energyMicroWh;
+    if (isTokenMode) return breakdownTokens(b);
+    return costMicrodollars;
+  }
+
+  function metricStatus(b: { energyStatus: string }): string {
+    return isEnergyMode ? b.energyStatus : "";
   }
 
   function isSeriesVisible(key: string): boolean {
@@ -77,9 +107,7 @@
         for (const b of day.projectBreakdowns) {
           if (!isSeriesVisible(b.project_key)) continue;
           labels[b.project_key] = b.project;
-          const value = isTokenMode
-            ? breakdownTokens(b)
-            : b.cost.microdollars;
+          const value = metricValue(b, b.cost.microdollars);
           totals.set(
             b.project_key,
             (totals.get(b.project_key) ?? 0) + value,
@@ -89,9 +117,7 @@
         hasBreakdownData ||= day.modelBreakdowns.length > 0;
         for (const b of day.modelBreakdowns) {
           if (!isSeriesVisible(b.modelName)) continue;
-          const value = isTokenMode
-            ? breakdownTokens(b)
-            : b.cost.microdollars;
+          const value = metricValue(b, b.cost.microdollars);
           totals.set(
             b.modelName,
             (totals.get(b.modelName) ?? 0) + value,
@@ -102,9 +128,7 @@
         hasBreakdownData ||= day.agentBreakdowns.length > 0;
         for (const b of day.agentBreakdowns) {
           if (!isSeriesVisible(b.agent)) continue;
-          const value = isTokenMode
-            ? breakdownTokens(b)
-            : b.cost.microdollars;
+          const value = metricValue(b, b.cost.microdollars);
           totals.set(
             b.agent,
             (totals.get(b.agent) ?? 0) + value,
@@ -123,10 +147,9 @@
         date: d.date,
         time: dateTime(d.date),
         values: {
-          total: isTokenMode
-            ? breakdownTokens(d)
-            : d.totalCost.microdollars,
+          total: metricValue(d, d.totalCost.microdollars),
         },
+        statuses: { total: metricStatus(d) },
       }));
       let maxY = 0;
       for (const pt of points) {
@@ -146,40 +169,41 @@
     const points: Point[] = [];
     for (const day of daily) {
       const values: Record<string, number> = {};
-      let items: Array<{ key: string; value: number }> = [];
+      const statuses: Record<string, string> = {};
+      let items: Array<{ key: string; value: number; status: string }> = [];
 
       if (groupBy === "project" && day.projectBreakdowns) {
         items = day.projectBreakdowns
           .filter((b) => isSeriesVisible(b.project_key))
           .map((b) => ({
             key: b.project_key,
-            value: isTokenMode ? breakdownTokens(b) : b.cost.microdollars,
+            value: metricValue(b, b.cost.microdollars),
+            status: metricStatus(b),
           }));
       } else if (groupBy === "model" && day.modelBreakdowns) {
         items = day.modelBreakdowns
           .filter((b) => isSeriesVisible(b.modelName))
           .map((b) => ({
             key: b.modelName,
-            value: isTokenMode ? breakdownTokens(b) : b.cost.microdollars,
+            value: metricValue(b, b.cost.microdollars),
+            status: metricStatus(b),
           }));
       } else if (groupBy === "agent" && day.agentBreakdowns) {
         items = day.agentBreakdowns
           .filter((b) => isSeriesVisible(b.agent))
           .map((b) => ({
             key: b.agent,
-            value: isTokenMode ? breakdownTokens(b) : b.cost.microdollars,
+            value: metricValue(b, b.cost.microdollars),
+            status: metricStatus(b),
           }));
       }
 
-      for (const { key, value } of items) {
-        if (topKeys.has(key)) {
-          values[key] = (values[key] ?? 0) + value;
-        } else {
-          values["__other__"] =
-            (values["__other__"] ?? 0) + value;
-        }
+      for (const { key, value, status } of items) {
+        const bucket = topKeys.has(key) ? key : "__other__";
+        values[bucket] = (values[bucket] ?? 0) + value;
+        statuses[bucket] = combineEnergyStatus(statuses[bucket] ?? "", status);
       }
-      points.push({ date: day.date, time: dateTime(day.date), values });
+      points.push({ date: day.date, time: dateTime(day.date), values, statuses });
     }
 
     // Build ordered key list: top N by value desc, then
@@ -241,9 +265,7 @@
   const yLabelWidth = $derived.by(() => {
     let maxLength = 0;
     for (const value of yTickValues) {
-      const label = isTokenMode
-        ? fmtTokenYLabel(value)
-        : fmtCostYLabel(value);
+      const label = fmtYLabel(value);
       maxLength = Math.max(maxLength, [...label].length);
     }
     return Math.max(
@@ -281,6 +303,12 @@
     return formatMoney(moneyFromMicrodollars(v));
   }
 
+  function fmtYLabel(v: number): string {
+    if (isEnergyMode) return formatEnergy(v);
+    if (isTokenMode) return fmtTokenYLabel(v);
+    return fmtCostYLabel(v);
+  }
+
   function fmtTokenYLabel(v: number): string {
     if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1)}B`;
     if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
@@ -312,9 +340,19 @@
           ? m.shared_other()
           : seriesData.labels[key] ?? key,
         value: point.values[key] ?? 0,
+        status: point.statuses[key] ?? "",
         color: seriesColor(key),
       }))
       .sort((a, b) => b.value - a.value);
+  }
+
+  /** Renders one tooltip row's value: the ordinary y-axis formatter in
+   * cost/token mode, or, in energy mode, the shared partial/n-a-aware
+   * formatter -- so a mixed or fully unpriced bucket cannot look identical
+   * to (or, for a fully unpriced one, silently read as zero next to) a
+   * fully priced one in the one place a viewer inspects an exact value. */
+  function fmtTooltipValue(value: number, status: string): string {
+    return isEnergyMode ? formatEnergyStatus(value, status) : fmtYLabel(value);
   }
 
   function handleGroupByChange(g: GroupBy) {
@@ -367,6 +405,9 @@
   <div class="chart-header">
     <h3 class="chart-title">
       {chartTitle}
+      {#if isEnergyMode}
+        <EnergyEstimateMark microWh={seriesData.maxY} />
+      {/if}
     </h3>
     <div class="chart-actions">
       <form
@@ -470,9 +511,7 @@
             formatX={(value) => dateLabel(
               new Date(Number(value)).toISOString().slice(0, 10),
             )}
-            formatY={(value) => isTokenMode
-              ? fmtTokenYLabel(Number(value))
-              : fmtCostYLabel(Number(value))}
+            formatY={(value) => fmtYLabel(Number(value))}
           >
             {#each stackSeries as item (item.key)}
               {#if seriesData.points.length === 1}
@@ -500,9 +539,7 @@
                   <span class="tooltip-dot" style="background: {row.color}"></span>
                   <span class="tooltip-name">{row.label}</span>
                   <span class="tooltip-value">
-                    {isTokenMode
-                      ? fmtTokenYLabel(row.value)
-                      : formatMoney(moneyFromMicrodollars(row.value))}
+                    {fmtTooltipValue(row.value, row.status)}
                   </span>
                 </div>
               {/each}

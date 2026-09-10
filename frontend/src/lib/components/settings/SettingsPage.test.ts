@@ -4,6 +4,7 @@ import { mount, tick, unmount } from "svelte";
 import { dismissFlash } from "@kenn-io/kit-ui";
 // @ts-ignore
 import SettingsPage from "./SettingsPage.svelte";
+import { settingsPanels } from "./settingsPanels.js";
 import { SettingsService } from "../../api/generated/index";
 import { settings } from "../../stores/settings.svelte.js";
 import { router } from "../../stores/router.svelte.js";
@@ -261,7 +262,10 @@ describe("SettingsPage", () => {
     restoredSearch.dispatchEvent(new Event("input", { bubbles: true }));
     await tick();
 
-    expect(restoredNav.querySelectorAll("button")).toHaveLength(10);
+    // The nav renders exactly one button per declared panel; derive the
+    // expected count from the registry instead of a hard-coded literal so
+    // this test doesn't drift the next time a panel is added or removed.
+    expect(restoredNav.querySelectorAll("button")).toHaveLength(settingsPanels().length);
     expect(
       document.body.querySelector(".settings-page")?.classList.contains("settings-no-results"),
     ).toBe(false);

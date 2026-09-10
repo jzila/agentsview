@@ -708,6 +708,7 @@
   "usage_mode_label": "Usage metric",
   "usage_mode_cost": "Cost",
   "usage_mode_tokens": "Tokens",
+  "usage_mode_energy": "Energy",
   "usage_token_types_label": "Token types",
   "usage_token_types_all": "Token types: All",
   "usage_token_types_single": "Token types: {tokenType}",
@@ -720,14 +721,17 @@
   "usage_top_sessions_by_selected_tokens": "Top Sessions by {tokenTypes}",
   "usage_refresh": "Refresh usage data",
   "usage_summary_total_cost": "Total Cost",
+  "usage_summary_total_energy": "Total Energy (est.)",
   "usage_summary_total_tokens": "Total Tokens",
   "usage_summary_copilot_ai_credits": "Copilot AI Credits",
   "usage_summary_unsupported_copilot_no_token_data": "Copilot sessions matched this range, but Copilot does not record per-message token usage.",
   "usage_summary_unsupported_generic": "Matching sessions do not expose token usage data.",
   "usage_summary_input_tokens": "Input Tokens",
   "usage_summary_daily_burn": "Daily Burn",
+  "usage_summary_daily_burn_energy": "Daily Burn (est.)",
   "usage_summary_daily_burn_tokens": "Daily Burn",
   "usage_summary_peak_day": "Peak Day",
+  "usage_summary_peak_day_energy": "Peak Day (est.)",
   "usage_summary_peak_day_tokens": "Peak Day",
   "usage_summary_cache_hit": "Cache Hit",
   "usage_summary_vs_prior": "{value} vs prior",
@@ -1590,7 +1594,7 @@
   "insights_page_no_matching_generators": "No matching generators",
   "insights_page_optional_focus": "Optional focus",
   "insights_page_focus_placeholder": "Narrow the recommendation without changing scored facts",
-  "insights_page_generate_disabled": "Insight generation is unavailable for this archive",
+  "insights_page_generate_disabled": "Generation is disabled in read-only mode",
   "insights_page_generate_title": "Generate quality recommendation",
   "insights_page_generate": "Generate",
   "insights_page_loading_archive": "Loading archive...",
@@ -2038,5 +2042,65 @@
   "settings_tool_result_images_keep": "Keep",
   "settings_tool_result_images_drop": "Drop",
   "settings_tool_result_images_hint": "Stored results keep the policy they were written under, and switching back to Keep cannot restore payloads already removed. Run agentsview db strip --images to project existing rows.",
-  "settings_tool_result_images_restart_notice": "Restart the AgentsView daemon to apply this change to newly ingested sessions."
+  "settings_tool_result_images_restart_notice": "Restart the AgentsView daemon to apply this change to newly ingested sessions.",
+  "usage_energy_estimate_mark_aria": "About this energy estimate",
+  "usage_energy_estimate_tooltip_scenario": "{scenario} scenario estimate",
+  "usage_energy_scenario_low": "Low",
+  "usage_energy_scenario_mid": "Mid",
+  "usage_energy_scenario_high": "High",
+  "usage_energy_estimate_tooltip_anchor": "Anchored to published inference-energy measurements using each model's list price as a proxy for how energy-intensive it is to serve. Expect roughly 2x uncertainty either way.",
+  "usage_energy_estimate_tooltip_equivalence_minutes": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=one": "About {valueLabel} minute of a 130 W TV",
+        "valuePlural=other": "About {valueLabel} minutes of a 130 W TV"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_equivalence_hours": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=one": "About {valueLabel} hour of a 130 W TV",
+        "valuePlural=other": "About {valueLabel} hours of a 130 W TV"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_equivalence_days": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=one": "About {valueLabel} day of a 130 W TV",
+        "valuePlural=other": "About {valueLabel} days of a 130 W TV"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_methodology": "Methodology",
+  "usage_energy_partial_title": "Some usage in this figure has no published rate and is not included",
+  "usage_energy_not_available": "n/a",
+  "usage_energy_not_available_title": "No usage in this figure has a published rate",
+  "usage_energy_over_time_title": "Energy Over Time",
+  "usage_energy_attribution_title": "Energy Attribution",
+  "usage_top_sessions_by_energy": "Top Sessions by Energy",
+  "usage_pairwise_energy_title": "Comparative Energy Analysis",
+  "usage_pairwise_energy_subtitle": "Compare two model or project slices using backend-computed session and energy metrics.",
+  "usage_pairwise_energy_per_session": "Energy / Session",
+  "usage_total_energy": "Total Energy",
+  "settings_energy_estimate_title": "Energy estimate",
+  "settings_energy_estimate_description": "Choose which scenario the estimated-energy figures use, and see the effective rate per token type.",
+  "settings_search_keywords_energy_estimate": "energy watt-hours wh scenario estimate carbon",
+  "settings_energy_scenario_label": "Scenario",
+  "settings_energy_scenario_description": "Which point on the fitted low/mid/high energy band the app reports.",
+  "settings_energy_effective_rates_title": "Effective Wh/MTok by token type",
+  "settings_energy_col_model": "Model",
+  "settings_energy_col_input": "Input",
+  "settings_energy_col_output": "Output",
+  "settings_energy_col_cache_write": "Cache write",
+  "settings_energy_col_cache_read": "Cache read",
+  "settings_energy_loading": "Loading...",
+  "session_breadcrumb_estimated_session_energy": "Estimated session energy"
 }

@@ -232,6 +232,24 @@ cache creation without earning the reads back.
 
 ![Cache efficiency panel](/docs/assets/generated/screenshots/usage-cache-efficiency.png)
 
+### Energy (Estimated)
+
+The Cost / Tokens mode picker at the top of the Usage page has a third
+setting, **Energy**, that switches every usage surface -- the summary cards,
+the cost/time chart, the attribution panel and treemap, top sessions, the
+pairwise comparison, and the session detail usage breakdown -- to an
+estimated watt-hour figure instead of dollars. Every energy figure carries a
+small estimate marker; hover or focus it for the scenario, the price-as-proxy
+anchor, a link to the methodology, and a relatable equivalence against a
+130 W TV, scaled to minutes, hours, or days so it stays readable at any
+size. There is no vendor-published number for energy per token; the
+estimate uses each model's list price as a proxy, anchored to a handful of
+published measurements, and carries roughly 2x uncertainty either way. See
+[`docs/internal/energy-model.md`](/docs/internal/energy-model.md) for the
+full methodology, `agentsview usage energy-model` to inspect the fit and
+per-model numbers from the CLI, and Settings > Preferences > Energy estimate
+to change the low/mid/high scenario the app reports.
+
 The dashboard reads from the same `model_pricing` table that backs the CLI
 commands below, so the numbers line up exactly with what
 `agentsview usage daily` prints.
@@ -323,6 +341,17 @@ requests, so they conservatively use the base rate instead of applying a
 threshold to an aggregate.
 
 The default window is the last 30 days; pass `--all` to scan the full history.
+
+### Energy Estimates
+
+Energy is computed the same way, at read time, from the same token counts
+used for cost: each token type's list price relative to the model's output
+price stands in for how energy-intensive it is to serve, fitted against a
+committed set of published measurements. It is an estimate with roughly 2x
+uncertainty either way, and there is no vendor confirmation behind it. See
+[`docs/internal/energy-model.md`](/docs/internal/energy-model.md) for the
+full methodology and `agentsview usage daily --energy` /
+`agentsview usage energy-model` on the CLI.
 
 !!! note
 

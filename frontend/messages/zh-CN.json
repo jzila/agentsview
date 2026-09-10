@@ -684,6 +684,7 @@
   "usage_mode_label": "用量指标",
   "usage_mode_cost": "成本",
   "usage_mode_tokens": "Token",
+  "usage_mode_energy": "能耗",
   "usage_token_types_label": "Token 类型",
   "usage_token_types_all": "Token 类型：全部",
   "usage_token_types_single": "Token 类型：{tokenType}",
@@ -696,12 +697,15 @@
   "usage_top_sessions_by_selected_tokens": "按{tokenTypes}排名的会话",
   "usage_refresh": "刷新用量数据",
   "usage_summary_total_cost": "总成本",
+  "usage_summary_total_energy": "总能耗(估算)",
   "usage_summary_total_tokens": "总 Token",
   "usage_summary_copilot_ai_credits": "Copilot AI Credits",
   "usage_summary_input_tokens": "输入 Token",
   "usage_summary_daily_burn": "每日消耗",
+  "usage_summary_daily_burn_energy": "每日能耗(估算)",
   "usage_summary_daily_burn_tokens": "每日消耗",
   "usage_summary_peak_day": "峰值日期",
+  "usage_summary_peak_day_energy": "峰值日期(估算)",
   "usage_summary_peak_day_tokens": "峰值日期",
   "usage_summary_cache_hit": "缓存命中",
   "usage_summary_vs_prior": "较上一周期 {value}",
@@ -795,7 +799,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个项目" }
+      "match": {
+        "countPlural=other": "{countNumber} 个项目"
+      }
     }
   ],
   "data_summary_sessions": [
@@ -806,7 +812,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话"
+      }
     }
   ],
   "data_summary_governed": [
@@ -817,7 +825,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话受规则管理" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话受规则管理"
+      }
     }
   ],
   "data_filter_projects": "筛选项目",
@@ -837,7 +847,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 条已启用的规则以此项目为目标" }
+      "match": {
+        "countPlural=other": "{countNumber} 条已启用的规则以此项目为目标"
+      }
     }
   ],
   "data_recorded_original": "已记录为规则的原始标签",
@@ -861,7 +873,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_cwd_unavailable": "此文件夹无法安全映射，因为它不可用或表示文件系统根目录。",
@@ -880,7 +894,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "匹配 {countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "匹配 {countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_sessions_changing": [
@@ -891,7 +907,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "将更改 {countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "将更改 {countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_projects_affected": [
@@ -902,7 +920,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个项目" }
+      "match": {
+        "countPlural=other": "{countNumber} 个项目"
+      }
     }
   ],
   "data_reclassify_normalized_target": "将保存为 {project}",
@@ -915,7 +935,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_zero_matches": "此前缀与存档中的任何会话都不匹配。",
@@ -1526,7 +1548,7 @@
   "insights_page_no_matching_generators": "无匹配生成器",
   "insights_page_optional_focus": "可选焦点",
   "insights_page_focus_placeholder": "在不改变评分事实的前提下细化建议",
-  "insights_page_generate_disabled": "此归档无法生成洞察",
+  "insights_page_generate_disabled": "只读模式下已禁用生成",
   "insights_page_generate_title": "生成质量建议",
   "insights_page_generate": "生成",
   "insights_page_loading_archive": "正在加载存档...",
@@ -1973,5 +1995,62 @@
   "settings_tool_result_images_keep": "保留",
   "settings_tool_result_images_drop": "丢弃",
   "settings_tool_result_images_hint": "已存储的结果保持写入时的策略，改回「保留」也无法恢复已删除的数据。运行 agentsview db strip --images 可处理已有记录。",
-  "settings_tool_result_images_restart_notice": "重启 AgentsView 守护进程后，此更改才会应用到新采集的会话。"
+  "settings_tool_result_images_restart_notice": "重启 AgentsView 守护进程后，此更改才会应用到新采集的会话。",
+  "usage_energy_estimate_mark_aria": "关于此能耗估算",
+  "usage_energy_estimate_tooltip_scenario": "{scenario}场景估算值",
+  "usage_energy_scenario_low": "低",
+  "usage_energy_scenario_mid": "中",
+  "usage_energy_scenario_high": "高",
+  "usage_energy_estimate_tooltip_anchor": "基于已发表的推理能耗测量数据，以各模型的标价作为服务能耗的代理指标进行锚定估算，误差范围约为2倍。",
+  "usage_energy_estimate_tooltip_equivalence_minutes": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=other": "约相当于一台130瓦电视机播放{valueLabel}分钟"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_equivalence_hours": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=other": "约相当于一台130瓦电视机播放{valueLabel}小时"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_equivalence_days": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=other": "约相当于一台130瓦电视机播放{valueLabel}天"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_methodology": "方法说明",
+  "usage_energy_partial_title": "此数值中有部分用量没有公开费率，未计入统计",
+  "usage_energy_not_available": "不适用",
+  "usage_energy_not_available_title": "此数值中没有任何用量拥有公开费率",
+  "usage_energy_over_time_title": "能耗趋势",
+  "usage_energy_attribution_title": "能耗归因",
+  "usage_top_sessions_by_energy": "按能耗排名的会话",
+  "usage_pairwise_energy_title": "能耗对比分析",
+  "usage_pairwise_energy_subtitle": "使用后端计算的会话和能耗指标比较两个模型或项目切片。",
+  "usage_pairwise_energy_per_session": "能耗/会话",
+  "usage_total_energy": "总能耗",
+  "settings_energy_estimate_title": "能耗估算",
+  "settings_energy_estimate_description": "选择估算能耗数值使用的场景，并查看各令牌类型的有效能耗率。",
+  "settings_search_keywords_energy_estimate": "能耗 瓦时 wh 场景 估算 碳排放",
+  "settings_energy_scenario_label": "场景",
+  "settings_energy_scenario_description": "应用报告拟合的低/中/高能耗区间中的哪一点。",
+  "settings_energy_effective_rates_title": "按令牌类型划分的有效 Wh/MTok",
+  "settings_energy_col_model": "模型",
+  "settings_energy_col_input": "输入",
+  "settings_energy_col_output": "输出",
+  "settings_energy_col_cache_write": "缓存写入",
+  "settings_energy_col_cache_read": "缓存读取",
+  "settings_energy_loading": "加载中…",
+  "session_breadcrumb_estimated_session_energy": "预估会话能耗"
 }

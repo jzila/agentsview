@@ -8,4 +8,5 @@ export type GetApiV1UsageTopSessionsSort =
 export const GetApiV1UsageTopSessionsSort = {
   cost: "cost",
   tokens: "tokens",
+  energy: "energy",
 } as const;

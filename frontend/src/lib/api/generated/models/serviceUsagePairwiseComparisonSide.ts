@@ -7,6 +7,8 @@ export interface ServiceUsagePairwiseComparisonSide {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   costPerSession?: MoneyMoney;
+  energyMicroWh: number;
+  energyStatus: string;
   inputTokens: number;
   outputTokens: number;
   sessionCount: number;

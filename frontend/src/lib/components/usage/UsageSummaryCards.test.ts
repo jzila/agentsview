@@ -20,6 +20,7 @@ function summary(): UsageSummaryResponse {
       outputTokens: 25,
       totalCost: testMoney(1),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: [
       {
@@ -34,6 +35,7 @@ function summary(): UsageSummaryResponse {
         projectBreakdowns: [],
         agentBreakdowns: [],
         machineBreakdowns: [],
+        energyMicroWh: 0, energyStatus: "",
       },
     ],
     projectTotals: [],
@@ -91,6 +93,47 @@ describe("UsageSummaryCards", () => {
       ?.previousElementSibling?.textContent?.trim();
     expect(dailyBurn).toBe("25");
     expect(peakDay).toBe("25");
+  });
+
+  it.each([
+    ["ok", 2_000_000, "ok", "2 Wh", false],
+    ["no_rate, partial", 2_000_000, "no_rate", "2 Wh~", true],
+    ["no_rate, wholly unpriced", 0, "no_rate", "n/a", true],
+  ] as const)(
+    "shows the total, daily-burn, and peak-day energy cards as partial together (status=%s)",
+    async (_case, energyMicroWh, energyStatus, wantValue, wantPartialSub) => {
+      const parent = summary();
+      Object.assign(parent.totals, { energyMicroWh, energyStatus });
+      Object.assign(parent.daily[0]!, { energyMicroWh, energyStatus });
+      usage.summary = parent;
+      usage.mode = "energy";
+
+      component = mount(UsageSummaryCards, { target: document.body });
+      await tick();
+
+      // total, daily burn, and peak day are cards 0, 3, and 4.
+      const values = document.querySelectorAll(".card-value");
+      for (const i of [0, 3, 4]) expect(values[i]?.textContent?.trim()).toBe(wantValue);
+      expect(document.querySelectorAll(".energy-estimate-mark")).toHaveLength(3);
+      expect(!!document.querySelector(".featured .card-sub")?.textContent?.trim()).toBe(wantPartialSub);
+    },
+  );
+
+  it("counts days by energy, not cost, in energy mode", async () => {
+    const parent = summary();
+    const day = parent.daily[0]!;
+    parent.daily.push(
+      { ...day, date: "2026-07-02", totalCost: testMoney(0), energyMicroWh: 1_000_000 },
+      { ...day, date: "2026-07-03", totalCost: testMoney(0), energyMicroWh: 1_000_000 },
+    );
+    usage.summary = parent;
+    usage.mode = "energy";
+
+    component = mount(UsageSummaryCards, { target: document.body });
+    await tick();
+
+    const values = document.querySelectorAll(".card-value");
+    expect(values[values.length - 1]?.textContent?.trim()).toBe("2");
   });
 
   it("keeps the Copilot credits card while a brushed range is active", async () => {

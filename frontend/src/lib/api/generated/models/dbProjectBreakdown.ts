@@ -7,6 +7,8 @@ export interface DbProjectBreakdown {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   cost: MoneyMoney;
+  energyMicroWh: number;
+  energyStatus: string;
   inputTokens: number;
   outputTokens: number;
   project: string;

@@ -5,6 +5,7 @@ export type SettingsPanelId =
   | "language"
   | "date-ranges"
   | "terminal"
+  | "energy-estimate"
   | "agent-directories"
   | "worktree-mappings"
   | "embeddings"
@@ -58,6 +59,14 @@ export function settingsPanels(): SettingsPanelMeta[] {
       description: m.settings_terminal_description(),
       group: preferences,
       keywords: m.settings_search_keywords_terminal(),
+    },
+    {
+      id: "energy-estimate",
+      label: m.settings_energy_estimate_title(),
+      title: m.settings_energy_estimate_title(),
+      description: m.settings_energy_estimate_description(),
+      group: preferences,
+      keywords: m.settings_search_keywords_energy_estimate(),
     },
     {
       id: "agent-directories",

@@ -11,13 +11,18 @@
     value: number;
     color: string;
     meta?: string;
+    /** Present only for energy-valued items: mirrors an API row's
+     * energyStatus ("no_rate" marks a partial or fully unpriced tile), so
+     * formatValue can render the same partial marker other energy-mode
+     * surfaces use instead of an ordinary Wh value. */
+    status?: string;
   }
 
   interface Props {
     items: TreemapItem[];
     height?: number;
     onSelect?: (id: string) => void;
-    formatValue?: (value: number) => string;
+    formatValue?: (value: number, item: TreemapItem) => string;
   }
 
   const uid = $props.id();
@@ -84,7 +89,7 @@
                 />
                 {#if large}
                   <Text value={tile.label} x={6} y={16} width={tileWidth - 12} truncate class="tile-label" />
-                  <Text value={formatValue(tile.value)} x={6} y={30} width={tileWidth - 12} truncate class="tile-value" />
+                  <Text value={formatValue(tile.value, tile)} x={6} y={30} width={tileWidth - 12} truncate class="tile-value" />
                   {#if tile.meta}
                     <Text value={tile.meta} x={6} y={42} width={tileWidth - 12} truncate class="tile-meta" />
                   {/if}

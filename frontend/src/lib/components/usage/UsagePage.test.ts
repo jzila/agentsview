@@ -30,6 +30,7 @@ function usageSummaryWithUnsupported(kind?: string): UsageSummaryResponse {
       cacheReadTokens: 0,
       totalCost: testMoney(0),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: [],
     projectTotals: [],
@@ -74,6 +75,7 @@ function tenModelUsageSummary(): UsageSummaryResponse {
       cacheReadTokens: 0,
       totalCost: testMoney(55),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: [
       {
@@ -83,6 +85,7 @@ function tenModelUsageSummary(): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         totalCost: testMoney(55),
+        energyMicroWh: 0, energyStatus: "",
         modelsUsed: models,
         modelBreakdowns: models.map((modelName, index) => ({
           modelName,
@@ -91,6 +94,7 @@ function tenModelUsageSummary(): UsageSummaryResponse {
           cacheCreationTokens: 0,
           cacheReadTokens: 0,
           cost: testMoney(index + 1),
+          energyMicroWh: 0, energyStatus: "",
         })),
         projectBreakdowns: [],
         agentBreakdowns: [],
@@ -104,6 +108,7 @@ function tenModelUsageSummary(): UsageSummaryResponse {
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       cost: testMoney(index + 1),
+      energyMicroWh: 0, energyStatus: "",
     })),
     sessionCounts: { total: 10, byProject: {}, byAgent: {} },
   };
@@ -184,6 +189,7 @@ describe("UsagePage refresh behavior", () => {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(8),
+        energyMicroWh: 0, energyStatus: "",
       },
       {
         project_key: "project-key-2",
@@ -193,6 +199,7 @@ describe("UsagePage refresh behavior", () => {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(2),
+        energyMicroWh: 0, energyStatus: "",
       },
     ];
     usage.summary = summary;

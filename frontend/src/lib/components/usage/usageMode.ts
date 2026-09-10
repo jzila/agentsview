@@ -1,7 +1,9 @@
 import type { UsageMode } from "../../stores/usage.svelte.js";
 
 export function usageModeFromParams(params: Record<string, string>): UsageMode {
-  return params.view === "tokens" ? "token" : "cost";
+  if (params.view === "tokens") return "token";
+  if (params.view === "energy") return "energy";
+  return "cost";
 }
 
 export function withUsageMode(
@@ -11,6 +13,8 @@ export function withUsageMode(
   const next = { ...params };
   if (mode === "token") {
     next.view = "tokens";
+  } else if (mode === "energy") {
+    next.view = "energy";
   } else {
     delete next.view;
   }

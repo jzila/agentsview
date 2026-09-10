@@ -59,6 +59,7 @@ function dailyEntry(index: number): DbDailyUsageEntry {
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
     totalCost: testMoney(10),
+    energyMicroWh: 0, energyStatus: "",
     modelsUsed: ["model"],
     projectBreakdowns: [
       {
@@ -69,6 +70,7 @@ function dailyEntry(index: number): DbDailyUsageEntry {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(10),
+        energyMicroWh: 0, energyStatus: "",
       },
     ],
     modelBreakdowns: [],
@@ -89,6 +91,7 @@ function usageSummary(): UsageSummaryResponse {
       cacheReadTokens: 0,
       totalCost: testMoney(150),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: Array.from({ length: 15 }, (_, i) => dailyEntry(i)),
     projectTotals: [
@@ -100,6 +103,7 @@ function usageSummary(): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: testMoney(150),
+        energyMicroWh: 0, energyStatus: "",
       },
     ],
     modelTotals: [],
@@ -122,18 +126,27 @@ function usageSummary(): UsageSummaryResponse {
 
 function modelDailyEntry(
   index: number,
-  models: Array<{ modelName: string; cost: Money }>,
+  models: Array<{
+    modelName: string;
+    cost: Money;
+    energyMicroWh?: number;
+    energyStatus?: string;
+  }>,
 ): DbDailyUsageEntry {
   const entry = dailyEntry(index);
   entry.projectBreakdowns = [];
-  entry.modelBreakdowns = models.map(({ modelName, cost }) => ({
-    modelName,
-    inputTokens: 60,
-    outputTokens: 30,
-    cacheCreationTokens: 0,
-    cacheReadTokens: 0,
-    cost,
-  }));
+  entry.modelBreakdowns = models.map(
+    ({ modelName, cost, energyMicroWh = 0, energyStatus = "" }) => ({
+      modelName,
+      inputTokens: 60,
+      outputTokens: 30,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      cost,
+      energyMicroWh,
+      energyStatus,
+    }),
+  );
   return entry;
 }
 
@@ -325,6 +338,50 @@ describe("CostTimeSeriesChart", () => {
     expect(labels).toContain("50");
     expect(labels).not.toContain("150");
 
+    unmount(component);
+  });
+
+  it("renders Wh axis labels and the estimate marker in energy mode", async () => {
+    usage.mode = "energy";
+    for (const day of usage.summary!.daily) day.projectBreakdowns![0]!.energyMicroWh = 20_000_000;
+    const component = mountChart();
+    await tick();
+
+    expect(document.querySelector(".chart-title")?.textContent).toContain("Energy Over Time");
+    expect(document.querySelector(".energy-estimate-mark")).not.toBeNull();
+    const labels = Array.from(document.querySelectorAll<SVGTextElement>("text.y-label"));
+    expect(labels.some((label) => label.textContent?.includes("Wh"))).toBe(true);
+    unmount(component);
+  });
+
+  it("carries energyStatus into tooltip rows instead of reducing to a bare number", async () => {
+    usage.mode = "energy";
+    usage.toggles.timeSeries.groupBy = "model";
+    usage.summary!.daily = [
+      modelDailyEntry(0, [
+        { modelName: "partial-model", cost: testMoney(0), energyMicroWh: 12_000_000, energyStatus: "no_rate" },
+        { modelName: "unpriced-model", cost: testMoney(0), energyMicroWh: 0, energyStatus: "no_rate" },
+      ]),
+    ];
+
+    const component = mountChart();
+    await tick();
+    const target = document.querySelector<HTMLElement>(".lc-tooltip-context")!;
+    Object.defineProperty(target, "offsetWidth", { configurable: true, value: OBSERVED_WIDTH });
+    Object.defineProperty(target, "offsetHeight", { configurable: true, value: 180 });
+    target.dispatchEvent(
+      new MouseEvent("pointerenter", { bubbles: true, clientX: 50, clientY: 40 }),
+    );
+    target.dispatchEvent(
+      new MouseEvent("pointermove", { bubbles: true, clientX: 50, clientY: 40 }),
+    );
+    await tick();
+
+    const rows = Array.from(document.querySelectorAll(".tooltip-row"));
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("12 Wh~"),
+      expect.stringContaining("n/a"),
+    ]);
     unmount(component);
   });
 

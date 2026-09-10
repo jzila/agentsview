@@ -7,6 +7,8 @@ export interface DbMachineBreakdown {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   cost: MoneyMoney;
+  energyMicroWh: number;
+  energyStatus: string;
   inputTokens: number;
   machineName: string;
   outputTokens: number;

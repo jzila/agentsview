@@ -11,6 +11,7 @@ import { sessions } from "../../stores/sessions.svelte.js";
 import { setLocale } from "../../i18n/index.js";
 import { router } from "../../stores/router.svelte.js";
 import { ui } from "../../stores/ui.svelte.js";
+import { usage } from "../../stores/usage.svelte.js";
 import { testMoney } from "../../test/money.js";
 import type { Money } from "../../money.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
@@ -108,6 +109,8 @@ interface SessionUsage {
   breakdown_count: number;
   breakdown: SessionUsageBreakdownEntry[];
   server_running: boolean;
+  energy_micro_wh?: number;
+  energy_status?: string;
 }
 
 interface SessionUsageBreakdownEntry {
@@ -123,6 +126,8 @@ interface SessionUsageBreakdownEntry {
   cache_read_input_tokens: number;
   cost: Money;
   has_cost: boolean;
+  energy_micro_wh?: number;
+  energy_status?: string;
 }
 
 function makeUsage(overrides: Partial<SessionUsage> = {}): SessionUsage {
@@ -1929,6 +1934,63 @@ describe("SessionBreadcrumb", () => {
           "Total cost including 1 subagent",
         );
       });
+
+      unmount(component);
+    });
+  });
+
+  describe("energy badge", () => {
+    afterEach(() => {
+      usage.mode = "cost";
+      messages.clear();
+      messages.sessionId = null;
+    });
+
+    it.each([
+      ["ok", { has_cost: true, cost: testMoney(1.5), energy_micro_wh: 45_000_000, energy_status: "ok" }, "45 Wh", "Estimated session energy"],
+      ["no_rate, partial", { energy_micro_wh: 12_000_000, energy_status: "no_rate" }, "12 Wh~", "Some usage in this figure has no published rate and is not included"],
+      ["no_rate, wholly unpriced", { energy_micro_wh: 0, energy_status: "no_rate" }, "n/a", "No usage in this figure has a published rate"],
+    ] as const)("shows the estimated energy badge, not cost, in energy mode (status=%s)", async (_status, overrides, wantText, wantTitle) => {
+      usage.mode = "energy";
+      sessionsService.getApiV1SessionsByIdUsage.mockResolvedValue(makeUsage(overrides));
+
+      const component = mount(SessionBreadcrumb, {
+        target: document.body,
+        props: { session: makeSession("claude"), onBack: () => {} },
+      });
+
+      await vi.waitFor(() => {
+        expect(document.querySelector(".cost-badge")?.textContent).toContain(wantText);
+      });
+      expect(document.querySelector(".cost-badge")?.getAttribute("title")).toBe(wantTitle);
+      unmount(component);
+    });
+
+    // A no-usage session carries no energy_micro_wh/energy_status at all.
+    it.each([
+      [
+        "the usage request fails",
+        () => sessionsService.getApiV1SessionsByIdUsage.mockRejectedValue(new Error("boom")),
+      ],
+      [
+        "the session has no usage data at all",
+        () => sessionsService.getApiV1SessionsByIdUsage.mockResolvedValue(makeUsage()),
+      ],
+    ])("renders no energy badge instead of a misleading 0 Wh when %s", async (_label, setup) => {
+      usage.mode = "energy";
+      setup();
+
+      const component = mount(SessionBreadcrumb, {
+        target: document.body,
+        props: { session: makeSession("claude"), onBack: () => {} },
+      });
+
+      await flushPromises();
+      await vi.waitFor(() => {
+        expect(sessionsService.getApiV1SessionsByIdUsage).toHaveBeenCalled();
+      });
+      await flushPromises();
+      expect(document.querySelector(".cost-badge")).toBeNull();
 
       unmount(component);
     });

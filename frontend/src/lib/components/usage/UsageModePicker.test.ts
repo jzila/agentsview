@@ -27,12 +27,15 @@ describe("UsageModePicker", () => {
     const group = document.querySelector('[role="radiogroup"][aria-label="Usage metric"]');
     expect(group).not.toBeNull();
     const radios = Array.from(group!.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
-    expect(radios.map((radio) => radio.textContent?.trim())).toEqual(["Cost", "Tokens"]);
+    expect(radios.map((radio) => radio.textContent?.trim())).toEqual(["Cost", "Tokens", "Energy"]);
     expect(radios[0]?.getAttribute("aria-checked")).toBe("true");
 
     radios[1]!.click();
     await tick();
-
     expect(onChange).toHaveBeenCalledWith("token");
+
+    radios[2]!.click();
+    await tick();
+    expect(onChange).toHaveBeenCalledWith("energy");
   });
 });

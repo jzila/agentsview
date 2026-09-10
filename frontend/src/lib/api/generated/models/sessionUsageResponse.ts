@@ -12,6 +12,8 @@ export interface SessionUsageResponse {
   cost: MoneyMoney;
   cost_source?: string;
   cost_usd?: number;
+  energy_micro_wh: number;
+  energy_status?: string;
   has_cost: boolean;
   has_rollup_cost?: boolean;
   has_token_data: boolean;

@@ -7,6 +7,8 @@ export interface SessionUsageBreakdownResponse {
   cache_creation_input_tokens: number;
   cache_read_input_tokens: number;
   cost: MoneyMoney;
+  energy_micro_wh: number;
+  energy_status?: string;
   has_cost: boolean;
   input_tokens: number;
   label: string;

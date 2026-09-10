@@ -5,8 +5,10 @@
     type AttributionView,
   } from "../../stores/usage.svelte.js";
   import Treemap from "./Treemap.svelte";
+  import EnergyEstimateMark from "../shared/EnergyEstimateMark.svelte";
   import { m } from "../../i18n/index.js";
   import { formatMoney, moneyFromMicrodollars } from "../../money.js";
+  import { formatEnergyStatus, energyStatusTitle, combineEnergyStatus } from "../../energy.js";
   import { formatTokenCount } from "../../utils/format.js";
   import { sumSelectedTokens } from "../../stores/usageTokenTypes.js";
 
@@ -21,14 +23,26 @@
     return `${((v / total) * 100).toFixed(1)}%`;
   }
 
+  function fmtValue(v: number, status: string): string {
+    if (isEnergyMode) return formatEnergyStatus(v, status);
+    if (isTokenMode) return formatTokenCount(v);
+    return formatMoney(moneyFromMicrodollars(v));
+  }
+
   const groupBy = $derived(usage.toggles.attribution.groupBy);
   const view = $derived(usage.toggles.attribution.view);
   const isTokenMode = $derived(usage.mode === "token");
+  const isEnergyMode = $derived(usage.mode === "energy");
 
   interface Row {
     id: string;
     label: string;
     value: number;
+    /** energyStatus of the underlying row in energy mode ("" otherwise),
+     * so a mixed priced/unpriced bucket -- or one that is entirely
+     * unpriced -- carries its partial marker through the treemap and list
+     * instead of rendering as an ordinary value or a bare zero. */
+    status: string;
     color: string;
     pct: number;
   }
@@ -41,31 +55,47 @@
       id: string;
       label: string;
       value: number;
+      status: string;
     }> = [];
+
+    function metricValue(row: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheCreationTokens: number;
+      cacheReadTokens: number;
+      energyMicroWh: number;
+      energyStatus: string;
+      cost: { microdollars: number };
+    }): number {
+      if (isEnergyMode) return row.energyMicroWh;
+      if (isTokenMode) return sumSelectedTokens(row, usage.selectedTokenTypes);
+      return row.cost.microdollars;
+    }
+
+    function metricStatus(row: { energyStatus: string }): string {
+      return isEnergyMode ? row.energyStatus : "";
+    }
 
     if (groupBy === "project") {
       items = s.projectTotals.map((p) => ({
         id: p.project_key,
         label: p.project,
-        value: isTokenMode
-          ? sumSelectedTokens(p, usage.selectedTokenTypes)
-          : p.cost.microdollars,
+        value: metricValue(p),
+        status: metricStatus(p),
       }));
     } else if (groupBy === "model") {
       items = s.modelTotals.map((m) => ({
         id: m.model,
         label: m.model,
-        value: isTokenMode
-          ? sumSelectedTokens(m, usage.selectedTokenTypes)
-          : m.cost.microdollars,
+        value: metricValue(m),
+        status: metricStatus(m),
       }));
     } else {
       items = s.agentTotals.map((a) => ({
         id: a.agent,
         label: a.agent,
-        value: isTokenMode
-          ? sumSelectedTokens(a, usage.selectedTokenTypes)
-          : a.cost.microdollars,
+        value: metricValue(a),
+        status: metricStatus(a),
       }));
     }
 
@@ -81,6 +111,7 @@
       id: d.id,
       label: d.label,
       value: d.value,
+      status: d.status,
       color: colorMap.get(d.id) ?? "var(--text-muted)",
       pct: total > 0 ? d.value / total : 0,
     }));
@@ -91,11 +122,19 @@
       id: r.id,
       label: r.label,
       value: r.value,
+      status: r.status,
       color: r.color,
       meta: fmtPct(r.value, rows.reduce(
         (sum, item) => sum + item.value, 0,
       )),
     })),
+  );
+
+  /** The attribution total's own status, for the header's estimate marker:
+   * combined across every row rather than just summing energyMicroWh, so a
+   * fully-unpriced total does not read as an ordinary (zero) estimate. */
+  const totalStatus = $derived(
+    rows.reduce((status, row) => combineEnergyStatus(status, row.status), ""),
   );
 
   function handleSelect(id: string) {
@@ -120,9 +159,19 @@
 <div class="attribution-panel">
   <div class="panel-header">
     <h3 class="chart-title">
-      {isTokenMode
-        ? m.usage_tokens_attribution_title()
-        : m.usage_cost_attribution_title()}
+      {isEnergyMode
+        ? m.usage_energy_attribution_title()
+        : isTokenMode
+          ? m.usage_tokens_attribution_title()
+          : m.usage_cost_attribution_title()}
+      {#if isEnergyMode}
+        <EnergyEstimateMark
+          microWh={rows.reduce((sum, row) => sum + row.value, 0)}
+        />
+        {#if totalStatus === "no_rate"}
+          <span title={m.usage_energy_partial_title()}>~</span>
+        {/if}
+      {/if}
     </h3>
     <div class="toggles">
       <div class="segment-toggle">
@@ -178,7 +227,7 @@
             items={treemapItems}
             height={260}
             onSelect={handleSelect}
-            formatValue={isTokenMode ? formatTokenCount : undefined}
+            formatValue={(value, item) => fmtValue(value, item.status ?? "")}
           />
         </div>
         <div class="side-rail">
@@ -196,10 +245,8 @@
                 style="background: {row.color}"
               ></span>
               <span class="rail-label">{row.label}</span>
-              <span class="rail-cost">
-                {isTokenMode
-                  ? formatTokenCount(row.value)
-                  : formatMoney(moneyFromMicrodollars(row.value))}
+              <span class="rail-cost" title={energyStatusTitle(row.value, row.status)}>
+                {fmtValue(row.value, row.status)}
               </span>
             </div>
           {/each}
@@ -233,10 +280,8 @@
             <span class="list-pct">
               {(row.pct * 100).toFixed(1)}%
             </span>
-            <span class="list-cost">
-              {isTokenMode
-                ? formatTokenCount(row.value)
-                : formatMoney(moneyFromMicrodollars(row.value))}
+            <span class="list-cost" title={energyStatusTitle(row.value, row.status)}>
+              {fmtValue(row.value, row.status)}
             </span>
           </div>
         {/each}

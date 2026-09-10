@@ -9,6 +9,8 @@ export interface DbTopSessionEntry {
   cacheReadTokens: number;
   cost: MoneyMoney;
   displayName: string;
+  energyMicroWh: number;
+  energyStatus: string;
   inputTokens: number;
   outputTokens: number;
   project: string;

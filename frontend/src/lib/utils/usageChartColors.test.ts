@@ -23,6 +23,7 @@ function tenModelSummary(): UsageSummaryResponse {
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
     cost: testMoney(index + 1),
+    energyMicroWh: 0, energyStatus: "",
   }));
   return {
     from: "2026-07-01",
@@ -35,6 +36,7 @@ function tenModelSummary(): UsageSummaryResponse {
       cacheReadTokens: 0,
       totalCost: testMoney(55),
       cacheSavings: testMoney(0),
+      energyMicroWh: 0, energyStatus: "",
     },
     daily: [
       {
@@ -44,6 +46,7 @@ function tenModelSummary(): UsageSummaryResponse {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         totalCost: testMoney(55),
+        energyMicroWh: 0, energyStatus: "",
         modelsUsed: models,
         modelBreakdowns: models.map((modelName, index) => ({
           modelName,
@@ -52,6 +55,7 @@ function tenModelSummary(): UsageSummaryResponse {
           cacheCreationTokens: 0,
           cacheReadTokens: 0,
           cost: testMoney(index + 1),
+          energyMicroWh: 0, energyStatus: "",
         })),
         projectBreakdowns: [],
         agentBreakdowns: [],

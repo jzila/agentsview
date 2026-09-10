@@ -708,6 +708,7 @@
   "usage_mode_label": "使用状況メトリクス",
   "usage_mode_cost": "料金",
   "usage_mode_tokens": "トークン",
+  "usage_mode_energy": "エネルギー",
   "usage_token_types_label": "トークンの種類",
   "usage_token_types_all": "トークンの種類: すべて",
   "usage_token_types_single": "トークンタイプ: {tokenType}",
@@ -720,14 +721,17 @@
   "usage_top_sessions_by_selected_tokens": "{tokenTypes} 別の上位セッション",
   "usage_refresh": "使用状況データを更新する",
   "usage_summary_total_cost": "総コスト",
+  "usage_summary_total_energy": "総エネルギー(推定)",
   "usage_summary_total_tokens": "総トークン数",
   "usage_summary_copilot_ai_credits": "Copilot AI クレジット",
   "usage_summary_unsupported_copilot_no_token_data": "Copilot セッションはこの範囲に一致しましたが、Copilot はメッセージごとのトークンの使用状況を記録しません。",
   "usage_summary_unsupported_generic": "一致するセッションでは、トークンの使用状況データは公開されません。",
   "usage_summary_input_tokens": "入力トークン",
   "usage_summary_daily_burn": "1日あたりのコスト",
+  "usage_summary_daily_burn_energy": "1日あたりのエネルギー(推定)",
   "usage_summary_daily_burn_tokens": "1日あたりのトークン消費",
   "usage_summary_peak_day": "ピーク日",
+  "usage_summary_peak_day_energy": "ピーク日(推定)",
   "usage_summary_peak_day_tokens": "ピーク日",
   "usage_summary_cache_hit": "キャッシュヒット",
   "usage_summary_vs_prior": "{value} と以前の比較",
@@ -1590,7 +1594,7 @@
   "insights_page_no_matching_generators": "一致するジェネレータがありません",
   "insights_page_optional_focus": "オプションのフォーカス",
   "insights_page_focus_placeholder": "スコア付けされたファクトを変更せずに推奨事項を絞り込む",
-  "insights_page_generate_disabled": "このアーカイブではインサイトを生成できません",
+  "insights_page_generate_disabled": "読み取り専用モードでは生成が無効になります",
   "insights_page_generate_title": "質の高い推奨事項を生成する",
   "insights_page_generate": "生成する",
   "insights_page_loading_archive": "アーカイブを読み込んでいます...",
@@ -2038,5 +2042,65 @@
   "settings_tool_result_images_keep": "保持",
   "settings_tool_result_images_drop": "破棄",
   "settings_tool_result_images_hint": "保存済みの結果は書き込み時のポリシーを保ち、保持に戻しても削除済みのデータは復元できません。既存の行は agentsview db strip --images で処理してください。",
-  "settings_tool_result_images_restart_notice": "この変更を新しく取り込むセッションに適用するには、AgentsView デーモンを再起動してください。"
+  "settings_tool_result_images_restart_notice": "この変更を新しく取り込むセッションに適用するには、AgentsView デーモンを再起動してください。",
+  "usage_energy_estimate_mark_aria": "このエネルギー推定について",
+  "usage_energy_estimate_tooltip_scenario": "{scenario}シナリオの推定値",
+  "usage_energy_scenario_low": "低",
+  "usage_energy_scenario_mid": "中",
+  "usage_energy_scenario_high": "高",
+  "usage_energy_estimate_tooltip_anchor": "各モデルの公表価格をサービング時のエネルギー消費量の代理指標として用い、公開されている推論エネルギー測定値に基づいて算出しています。誤差はおよそ2倍程度です。",
+  "usage_energy_estimate_tooltip_equivalence_minutes": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=one": "130Wのテレビを{valueLabel}分視聴するのとほぼ同じ",
+        "valuePlural=other": "130Wのテレビを{valueLabel}分視聴するのとほぼ同じ"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_equivalence_hours": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=one": "130Wのテレビを{valueLabel}時間視聴するのとほぼ同じ",
+        "valuePlural=other": "130Wのテレビを{valueLabel}時間視聴するのとほぼ同じ"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_equivalence_days": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=one": "130Wのテレビを{valueLabel}日間視聴するのとほぼ同じ",
+        "valuePlural=other": "130Wのテレビを{valueLabel}日間視聴するのとほぼ同じ"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_methodology": "方法論",
+  "usage_energy_partial_title": "この数値には公開レートのない使用分が含まれており、それらは集計対象外です",
+  "usage_energy_not_available": "該当なし",
+  "usage_energy_not_available_title": "この数値には公開レートのある使用分がありません",
+  "usage_energy_over_time_title": "時系列エネルギー",
+  "usage_energy_attribution_title": "エネルギーの内訳",
+  "usage_top_sessions_by_energy": "エネルギー消費量トップのセッション",
+  "usage_pairwise_energy_title": "エネルギー比較分析",
+  "usage_pairwise_energy_subtitle": "バックエンドで計算されたセッションおよびエネルギー指標を使って、2つのモデルまたはプロジェクトを比較します。",
+  "usage_pairwise_energy_per_session": "エネルギー/セッション",
+  "usage_total_energy": "総エネルギー",
+  "settings_energy_estimate_title": "エネルギー見積もり",
+  "settings_energy_estimate_description": "推定エネルギーの数値がどのシナリオを使うかを選択し、トークン種別ごとの実効レートを確認します。",
+  "settings_search_keywords_energy_estimate": "エネルギー ワット時 wh シナリオ 見積もり 炭素",
+  "settings_energy_scenario_label": "シナリオ",
+  "settings_energy_scenario_description": "アプリが表示する、フィットされた低/中/高エネルギー帯のどの地点か。",
+  "settings_energy_effective_rates_title": "トークン種別ごとの実効 Wh/MTok",
+  "settings_energy_col_model": "モデル",
+  "settings_energy_col_input": "入力",
+  "settings_energy_col_output": "出力",
+  "settings_energy_col_cache_write": "キャッシュ書き込み",
+  "settings_energy_col_cache_read": "キャッシュ読み取り",
+  "settings_energy_loading": "読み込み中…",
+  "session_breadcrumb_estimated_session_energy": "推定セッションエネルギー"
 }

@@ -12,6 +12,8 @@ export interface DbDailyUsageEntry {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   date: string;
+  energyMicroWh: number;
+  energyStatus: string;
   inputTokens: number;
   machineBreakdowns: DbMachineBreakdown[];
   modelBreakdowns: DbModelBreakdown[];

@@ -8,6 +8,8 @@ export interface DbUsageTotals {
   cacheReadTokens: number;
   cacheSavings: MoneyMoney;
   copilotAICredits?: number;
+  energyMicroWh: number;
+  energyStatus: string;
   inputTokens: number;
   outputTokens: number;
   totalCost: MoneyMoney;

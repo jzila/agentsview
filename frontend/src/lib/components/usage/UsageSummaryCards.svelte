@@ -3,6 +3,8 @@
   import { usage } from "../../stores/usage.svelte.js";
   import { m } from "../../i18n/index.js";
   import { ZERO_MONEY, compareMoney, divideMoney, formatMoney } from "../../money.js";
+  import { formatEnergyStatus, energyStatusTitle } from "../../energy.js";
+  import EnergyEstimateMark from "../shared/EnergyEstimateMark.svelte";
   import {
     ALL_TOKEN_TYPES,
     sumSelectedTokens,
@@ -29,6 +31,7 @@
   }
 
   const isTokenMode = $derived(usage.mode === "token");
+  const isEnergyMode = $derived(usage.mode === "energy");
 
   const inputTokens = $derived(
     usage.summary?.totals.inputTokens ?? 0,
@@ -71,6 +74,12 @@
     return divideMoney(s.totals.totalCost, s.daily.length);
   });
 
+  const dailyBurnEnergy = $derived.by(() => {
+    const s = usage.summary;
+    if (!s || !s.daily || s.daily.length === 0) return 0;
+    return s.totals.energyMicroWh / s.daily.length;
+  });
+
   const dailyBurnTokens = $derived.by(() => {
     const daily = usage.summary?.daily;
     if (!daily || daily.length === 0) return 0;
@@ -91,6 +100,18 @@
       if (compareMoney(d.totalCost, best.totalCost) > 0) best = d;
     }
     return { date: best.date, cost: best.totalCost };
+  });
+
+  const peakEnergy = $derived.by(() => {
+    const s = usage.summary;
+    if (!s || !s.daily || s.daily.length === 0) {
+      return { date: "", energyMicroWh: 0, energyStatus: "" };
+    }
+    let best = s.daily[0]!;
+    for (const d of s.daily) {
+      if (d.energyMicroWh > best.energyMicroWh) best = d;
+    }
+    return { date: best.date, energyMicroWh: best.energyMicroWh, energyStatus: best.energyStatus };
   });
 
   const peakTokens = $derived.by(() => {
@@ -143,9 +164,11 @@
     const daily = usage.summary?.daily;
     if (!daily) return 0;
     return daily.filter((day) =>
-      isTokenMode
-        ? breakdownTokens(day) > 0
-        : day.totalCost.microdollars > 0
+      isEnergyMode
+        ? day.energyMicroWh > 0
+        : isTokenMode
+          ? breakdownTokens(day) > 0
+          : day.totalCost.microdollars > 0
     ).length;
   });
 
@@ -167,9 +190,93 @@
     value: () => string;
     sub?: () => string;
     featured?: boolean;
+    /** Present only for energy-valued cards: the micro-Wh figure the card
+     * displays, so the estimate marker's tooltip anchors to the same
+     * number as the card rather than a re-derived one. */
+    energy?: () => number;
+  }
+
+  // Thin wrappers over the shared energy.ts presentation helper (also used
+  // by TopSessionsTable, AttributionPanel, CostTimeSeriesChart, and
+  // SessionBreadcrumb), so every energy-mode surface renders a partial
+  // estimate the same way.
+  function energyCardValue(value: number, status: string): string {
+    return formatEnergyStatus(value, status);
+  }
+
+  function energyCardSub(value: number, status: string, fallback: () => string): string {
+    return energyStatusTitle(value, status) ?? fallback();
   }
 
   const cards = $derived.by(() => {
+    if (isEnergyMode) {
+      return [
+        {
+          label: () => m.usage_summary_total_energy(),
+          value: () =>
+            energyCardValue(
+              usage.summary?.totals.energyMicroWh ?? 0,
+              usage.summary?.totals.energyStatus ?? "",
+            ),
+          sub: () =>
+            energyCardSub(
+              usage.summary?.totals.energyMicroWh ?? 0,
+              usage.summary?.totals.energyStatus ?? "",
+              () => "",
+            ),
+          energy: () => usage.summary?.totals.energyMicroWh ?? 0,
+          featured: true,
+        },
+        {
+          label: () => m.usage_summary_input_tokens(),
+          value: () => fmtTokens(inputTokens),
+          sub: () =>
+            cachedTokens > 0
+              ? m.usage_summary_cached_tokens({
+                  value: `+${fmtTokens(cachedTokens)}`,
+                })
+              : "",
+        },
+        {
+          label: () => m.analytics_metric_output_tokens(),
+          value: () => fmtTokens(outputTokens),
+        },
+        {
+          label: () => m.usage_summary_daily_burn_energy(),
+          value: () =>
+            energyCardValue(dailyBurnEnergy, usage.summary?.totals.energyStatus ?? ""),
+          sub: () =>
+            energyCardSub(dailyBurnEnergy, usage.summary?.totals.energyStatus ?? "", () =>
+              m.usage_summary_avg_day(),
+            ),
+          energy: () => dailyBurnEnergy,
+        },
+        {
+          label: () => m.usage_summary_peak_day_energy(),
+          value: () => energyCardValue(peakEnergy.energyMicroWh, peakEnergy.energyStatus),
+          sub: () =>
+            energyCardSub(peakEnergy.energyMicroWh, peakEnergy.energyStatus, () => peakEnergy.date),
+          energy: () => peakEnergy.energyMicroWh,
+        },
+        {
+          label: () => m.usage_summary_cache_hit(),
+          value: () => fmtPct(usage.summary?.cacheStats.hitRate ?? 0),
+        },
+        {
+          label: () => m.analytics_summary_projects(),
+          value: () => String(usage.summary?.projectTotals.length ?? 0),
+        },
+        {
+          label: () => m.usage_models(),
+          value: () => String(usage.summary?.modelTotals.length ?? 0),
+        },
+        {
+          label: () => m.analytics_summary_active_days(),
+          value: () => String(activeDays),
+        },
+      ] satisfies Card[];
+    }
+
     if (isTokenMode) {
       return [
         {
@@ -300,7 +407,12 @@
         <span class="card-label">{card.label()}</span>
       {:else}
         <span class="card-value">{card.value()}</span>
-        <span class="card-label">{card.label()}</span>
+        <span class="card-label">
+          {card.label()}
+          {#if card.energy}
+            <EnergyEstimateMark microWh={card.energy()} />
+          {/if}
+        </span>
         {#if card.sub}
           {@const subtext = card.sub()}
           {#if subtext}

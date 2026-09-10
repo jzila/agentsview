@@ -708,6 +708,7 @@
   "usage_mode_label": "Mesure de consommation",
   "usage_mode_cost": "Coût",
   "usage_mode_tokens": "Tokens",
+  "usage_mode_energy": "Énergie",
   "usage_token_types_label": "Types de tokens",
   "usage_token_types_all": "Types de tokens : Tous",
   "usage_token_types_single": "Types de tokens : {tokenType}",
@@ -720,14 +721,17 @@
   "usage_top_sessions_by_selected_tokens": "Sessions principales par {tokenTypes}",
   "usage_refresh": "Actualiser les données de consommation",
   "usage_summary_total_cost": "Coût total",
+  "usage_summary_total_energy": "Énergie totale (est.)",
   "usage_summary_total_tokens": "Total des tokens",
   "usage_summary_copilot_ai_credits": "Crédits Copilot AI",
   "usage_summary_unsupported_copilot_no_token_data": "Des sessions Copilot correspondent à cette plage, mais Copilot n'enregistre pas la consommation de tokens par message.",
   "usage_summary_unsupported_generic": "Les sessions correspondantes n'exposent aucune donnée de consommation de tokens.",
   "usage_summary_input_tokens": "Tokens d'entrée",
   "usage_summary_daily_burn": "Consommation / jour",
+  "usage_summary_daily_burn_energy": "Consommation / jour (est.)",
   "usage_summary_daily_burn_tokens": "Consommation quotidienne",
   "usage_summary_peak_day": "Jour de pointe",
+  "usage_summary_peak_day_energy": "Jour de pointe (est.)",
   "usage_summary_peak_day_tokens": "Jour de pointe",
   "usage_summary_cache_hit": "Taux de cache",
   "usage_summary_vs_prior": "{value} vs précédent",
@@ -1589,7 +1593,7 @@
   "insights_page_no_matching_generators": "Aucun générateur correspondant",
   "insights_page_optional_focus": "Focalisation facultative",
   "insights_page_focus_placeholder": "Affinez la recommandation sans modifier les faits notés",
-  "insights_page_generate_disabled": "La génération de rapports est indisponible pour cette archive",
+  "insights_page_generate_disabled": "La génération est désactivée en mode lecture seule",
   "insights_page_generate_title": "Générer une recommandation de qualité",
   "insights_page_generate": "Générer",
   "insights_page_loading_archive": "Chargement de l'archive...",
@@ -2037,5 +2041,65 @@
   "settings_tool_result_images_keep": "Conserver",
   "settings_tool_result_images_drop": "Supprimer",
   "settings_tool_result_images_hint": "Les résultats déjà stockés gardent la règle appliquée lors de leur écriture, et revenir à Conserver ne restaure pas les données déjà supprimées. Lancez agentsview db strip --images pour traiter les lignes existantes.",
-  "settings_tool_result_images_restart_notice": "Redémarrez le démon AgentsView pour appliquer ce changement aux nouvelles sessions ingérées."
+  "settings_tool_result_images_restart_notice": "Redémarrez le démon AgentsView pour appliquer ce changement aux nouvelles sessions ingérées.",
+  "usage_energy_estimate_mark_aria": "À propos de cette estimation d'énergie",
+  "usage_energy_estimate_tooltip_scenario": "Estimation du scénario {scenario}",
+  "usage_energy_scenario_low": "Faible",
+  "usage_energy_scenario_mid": "Moyen",
+  "usage_energy_scenario_high": "Élevé",
+  "usage_energy_estimate_tooltip_anchor": "Ancré sur des mesures d'énergie d'inférence publiées, en utilisant le prix catalogue de chaque modèle comme indicateur de son coût énergétique. Comptez environ un facteur 2 d'incertitude dans un sens ou l'autre.",
+  "usage_energy_estimate_tooltip_equivalence_minutes": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=one": "Environ {valueLabel} minute d'un téléviseur de 130 W",
+        "valuePlural=other": "Environ {valueLabel} minutes d'un téléviseur de 130 W"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_equivalence_hours": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=one": "Environ {valueLabel} heure d'un téléviseur de 130 W",
+        "valuePlural=other": "Environ {valueLabel} heures d'un téléviseur de 130 W"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_equivalence_days": [
+    {
+      "declarations": ["input value", "input valueLabel", "local valuePlural = value: plural"],
+      "selectors": ["valuePlural"],
+      "match": {
+        "valuePlural=one": "Environ {valueLabel} jour d'un téléviseur de 130 W",
+        "valuePlural=other": "Environ {valueLabel} jours d'un téléviseur de 130 W"
+      }
+    }
+  ],
+  "usage_energy_estimate_tooltip_methodology": "Méthodologie",
+  "usage_energy_partial_title": "Une partie de l'utilisation de cette valeur n'a pas de tarif publié et n'est pas incluse",
+  "usage_energy_not_available": "n/d",
+  "usage_energy_not_available_title": "Aucune utilisation de cette valeur n'a de tarif publié",
+  "usage_energy_over_time_title": "Énergie dans le temps",
+  "usage_energy_attribution_title": "Attribution de l'énergie",
+  "usage_top_sessions_by_energy": "Sessions les plus énergivores",
+  "usage_pairwise_energy_title": "Analyse comparative de l'énergie",
+  "usage_pairwise_energy_subtitle": "Comparez deux tranches de modèle ou de projet à l'aide de métriques de session et d'énergie calculées côté serveur.",
+  "usage_pairwise_energy_per_session": "Énergie / session",
+  "usage_total_energy": "Énergie totale",
+  "settings_energy_estimate_title": "Estimation d'énergie",
+  "settings_energy_estimate_description": "Choisissez le scénario utilisé par les valeurs d'énergie estimée, et consultez le taux effectif par type de jeton.",
+  "settings_search_keywords_energy_estimate": "énergie wattheure wh scénario estimation carbone",
+  "settings_energy_scenario_label": "Scénario",
+  "settings_energy_scenario_description": "Le point de la bande d'énergie ajustée bas/moyen/élevé que l'application indique.",
+  "settings_energy_effective_rates_title": "Wh/MTok effectif par type de jeton",
+  "settings_energy_col_model": "Modèle",
+  "settings_energy_col_input": "Entrée",
+  "settings_energy_col_output": "Sortie",
+  "settings_energy_col_cache_write": "Écriture cache",
+  "settings_energy_col_cache_read": "Lecture cache",
+  "settings_energy_loading": "Chargement…",
+  "session_breadcrumb_estimated_session_energy": "Énergie estimée de la session"
 }

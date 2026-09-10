@@ -7,6 +7,8 @@ export interface DbModelBreakdown {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   cost: MoneyMoney;
+  energyMicroWh: number;
+  energyStatus: string;
   inputTokens: number;
   modelName: string;
   outputTokens: number;

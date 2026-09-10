@@ -13,6 +13,9 @@ export interface ServiceUsagePairwiseComparisonDelta {
   costPerSessionDelta: MoneyMoney | null;
   /** @nullable */
   costPerSessionRatio: number | null;
+  energyMicroWhDelta: number;
+  /** @nullable */
+  energyMicroWhDeltaRatio: number | null;
   inputTokensDelta: number;
   /** @nullable */
   inputTokensDeltaRatio: number | null;

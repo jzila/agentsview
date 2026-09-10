@@ -10,6 +10,7 @@ import { sessions } from "./sessions.svelte.js";
 import { perf, type PerfEntryStatus } from "./perf.svelte.js";
 import { rollingRange, today } from "../utils/dates.js";
 import { ALL_TOKEN_TYPES, canonicalTokenTypes, type UsageTokenType } from "./usageTokenTypes.js";
+import { combineEnergyStatus } from "../energy.js";
 
 type UsageParams = NonNullable<Parameters<typeof UsageService.getApiV1UsageSummary>[0]>;
 type UsagePairwiseParams = Parameters<typeof UsageService.getApiV1UsagePairwiseComparison>[0];
@@ -193,7 +194,7 @@ function samePairwiseSelection(
   );
 }
 
-export type UsageMode = "cost" | "token";
+export type UsageMode = "cost" | "token" | "energy";
 
 function summaryForDateRange(
   summary: UsageSummaryResponse,
@@ -209,6 +210,8 @@ function summaryForDateRange(
   let cacheCreationTokens = 0;
   let cacheReadTokens = 0;
   let totalMicrodollars = 0;
+  let energyMicroWh = 0;
+  let energyStatus = "";
 
   for (const day of daily) {
     inputTokens += day.inputTokens;
@@ -216,6 +219,8 @@ function summaryForDateRange(
     cacheCreationTokens += day.cacheCreationTokens;
     cacheReadTokens += day.cacheReadTokens;
     totalMicrodollars += day.totalCost.microdollars;
+    energyMicroWh += day.energyMicroWh;
+    energyStatus = combineEnergyStatus(energyStatus, day.energyStatus);
 
     for (const item of day.projectBreakdowns ?? []) {
       const total = projectTotals.get(item.project_key) ?? {
@@ -226,12 +231,16 @@ function summaryForDateRange(
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: { microdollars: 0 },
+        energyMicroWh: 0,
+        energyStatus: "",
       };
       total.inputTokens += item.inputTokens;
       total.outputTokens += item.outputTokens;
       total.cacheCreationTokens += item.cacheCreationTokens;
       total.cacheReadTokens += item.cacheReadTokens;
       total.cost.microdollars += item.cost.microdollars;
+      total.energyMicroWh += item.energyMicroWh;
+      total.energyStatus = combineEnergyStatus(total.energyStatus, item.energyStatus);
       projectTotals.set(item.project_key, total);
     }
 
@@ -243,12 +252,16 @@ function summaryForDateRange(
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: { microdollars: 0 },
+        energyMicroWh: 0,
+        energyStatus: "",
       };
       total.inputTokens += item.inputTokens;
       total.outputTokens += item.outputTokens;
       total.cacheCreationTokens += item.cacheCreationTokens;
       total.cacheReadTokens += item.cacheReadTokens;
       total.cost.microdollars += item.cost.microdollars;
+      total.energyMicroWh += item.energyMicroWh;
+      total.energyStatus = combineEnergyStatus(total.energyStatus, item.energyStatus);
       modelTotals.set(item.modelName, total);
     }
 
@@ -260,12 +273,16 @@ function summaryForDateRange(
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: { microdollars: 0 },
+        energyMicroWh: 0,
+        energyStatus: "",
       };
       total.inputTokens += item.inputTokens;
       total.outputTokens += item.outputTokens;
       total.cacheCreationTokens += item.cacheCreationTokens;
       total.cacheReadTokens += item.cacheReadTokens;
       total.cost.microdollars += item.cost.microdollars;
+      total.energyMicroWh += item.energyMicroWh;
+      total.energyStatus = combineEnergyStatus(total.energyStatus, item.energyStatus);
       agentTotals.set(item.agent, total);
     }
   }
@@ -288,6 +305,8 @@ function summaryForDateRange(
       // Daily entries carry no per-day savings, so a derived range cannot
       // recompute them; the UI does not read this field for derived ranges.
       cacheSavings: { microdollars: 0 },
+      energyMicroWh,
+      energyStatus,
     },
     projectTotals: [...projectTotals.values()].sort(
       (a, b) => byCost(a, b) || a.project_key.localeCompare(b.project_key),
@@ -1146,7 +1165,7 @@ class UsageStore {
           UsageService.getApiV1UsageTopSessions(
             {
               ...(params ?? this.baseParams()),
-              sort: this.mode === "token" ? "tokens" : "cost",
+              sort: this.mode === "token" ? "tokens" : this.mode === "energy" ? "energy" : "cost",
               token_types:
                 this.mode === "token" && this.selectedTokenTypes.length < ALL_TOKEN_TYPES.length
                   ? this.selectedTokenTypes.join(",")

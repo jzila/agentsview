@@ -35,6 +35,7 @@ describe("TopSessionsTable", () => {
         outputTokens: 25,
         totalTokens: 965,
         cost: testMoney(1),
+        energyMicroWh: 0, energyStatus: "",
       },
     ];
 
@@ -48,4 +49,30 @@ describe("TopSessionsTable", () => {
     );
     expect(document.querySelector(".session-tokens")?.textContent?.trim()).toBe("25");
   });
+
+  it.each([
+    ["ok", 45_000_000, "ok", "45 Wh", false],
+    ["no_rate, partial", 45_000_000, "no_rate", "45 Wh~", true],
+    ["no_rate, wholly unpriced", 0, "no_rate", "n/a", true],
+  ] as const)(
+    "renders the energy figure, not cost, in energy mode (status=%s)",
+    async (_case, energyMicroWh, energyStatus, wantText, wantTitle) => {
+      usage.mode = "energy";
+      usage.topSessions = [
+        {
+          sessionId: "session-2", displayName: "Energy session", agent: "claude", project: "demo",
+          startedAt: "2026-07-01T00:00:00Z", inputTokens: 100, cacheCreationTokens: 0, cacheReadTokens: 0,
+          outputTokens: 25, totalTokens: 125, cost: testMoney(1), energyMicroWh, energyStatus,
+        },
+      ];
+
+      component = mount(TopSessionsTable, { target: document.body });
+      await tick();
+
+      expect(document.querySelector(".chart-title")?.textContent).toContain("Top Sessions by Energy");
+      const cell = document.querySelector<HTMLElement>(".session-cost");
+      expect(cell?.textContent?.trim()).toBe(wantText);
+      expect(!!cell?.title).toBe(wantTitle);
+    },
+  );
 });

@@ -16,6 +16,7 @@
   const options = $derived<SegmentedControlOption[]>([
     { value: "cost", label: m.usage_mode_cost() },
     { value: "token", label: m.usage_mode_tokens() },
+    { value: "energy", label: m.usage_mode_energy() },
   ]);
 </script>
 

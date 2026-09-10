@@ -7,6 +7,8 @@ export interface ModelTotal {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   cost: MoneyMoney;
+  energyMicroWh: number;
+  energyStatus: string;
   inputTokens: number;
   model: string;
   outputTokens: number;
