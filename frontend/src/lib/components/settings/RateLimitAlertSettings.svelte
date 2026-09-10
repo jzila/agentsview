@@ -43,15 +43,32 @@
     }
   }
 
+  const isDesktop = $derived(rateLimitAlertSettings.notifierKind === "desktop");
+
   const permissionMessage = $derived.by(() => {
+    // A failed requestPermission() call (a transient IPC/plugin-load
+    // failure, not a real denial) resets `permission` to "default" --
+    // the same value as the ordinary not-yet-decided state -- so this
+    // is checked first, ahead of the switch below, to show a distinct
+    // "something went wrong" message instead of the neutral one.
+    if (rateLimitAlertSettings.requestFailed) {
+      return m.settings_rate_limit_alerts_permission_request_failed();
+    }
     switch (rateLimitAlertSettings.permission) {
       case "granted":
-        return m.settings_rate_limit_alerts_permission_granted();
+        return isDesktop
+          ? m.settings_rate_limit_alerts_permission_granted_desktop()
+          : m.settings_rate_limit_alerts_permission_granted();
       case "denied":
-        return m.settings_rate_limit_alerts_permission_denied();
+        return isDesktop
+          ? m.settings_rate_limit_alerts_permission_denied_desktop()
+          : m.settings_rate_limit_alerts_permission_denied();
       case "unsupported":
-        return m.settings_rate_limit_alerts_permission_unsupported();
+        return isDesktop
+          ? m.settings_rate_limit_alerts_permission_unsupported_desktop()
+          : m.settings_rate_limit_alerts_permission_unsupported();
       default:
+        // Neutral copy for both surfaces -- doesn't mention "browser".
         return m.settings_rate_limit_alerts_permission_default();
     }
   });

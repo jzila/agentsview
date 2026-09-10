@@ -1,3 +1,4 @@
+import { getNotifier, type NotifierPermission } from "../utils/notifier.js";
 import {
   clampSliderThresholdPercent,
   DEFAULT_THRESHOLD_PERCENT,
@@ -21,10 +22,6 @@ const NOTIFIED_KEY = "agentsview-rate-limit-alerts-notified";
 const SETTINGS_VERSION = 2;
 const NOTIFIED_VERSION = 2;
 
-/** The browser's real notification permission, plus "unsupported" for
- * browsers/environments without the Notification API at all. */
-export type NotificationSupportState = NotificationPermission | "unsupported";
-
 interface StoredSettings {
   version: 2;
   enabled: boolean;
@@ -46,10 +43,6 @@ function getLocalStorage(): Storage | null {
   } catch {
     return null;
   }
-}
-
-function notificationApiSupported(): boolean {
-  return typeof Notification !== "undefined";
 }
 
 function defaultSettings(): StoredSettings {
@@ -208,10 +201,6 @@ export class RateLimitAlertSettingsStore {
    * value — see NotificationThresholdSettings.notifyOnExhausted. */
   notifyOnExhausted: boolean = $state(true);
   notifiedMap: NotifiedMap = $state({});
-  /** Last known browser permission state. Refreshed on construction and
-   * after every `enable()` call; never mutated by a bare page load
-   * beyond reading the current value. */
-  permission: NotificationSupportState = $state("default");
   /** True when the most recent write to SETTINGS_KEY/NOTIFIED_KEY threw
    * (e.g. storage full). While true, `hydrate()` skips reading the
    * corresponding key back from storage rather than overwriting
@@ -220,6 +209,41 @@ export class RateLimitAlertSettingsStore {
    * write to that key. */
   private settingsPersistFailed = false;
   private notifiedPersistFailed = false;
+  /** Last known permission state for whichever notifier is active (browser
+   * Notification API, or the desktop shell's native notifications --
+   * see utils/notifier.ts). This field has one owner: `applyPermissionRead`
+   * below, gated by `permissionReadGeneration` so a slower, older read
+   * (e.g. the constructor's refreshPermission(), still in flight) can
+   * never clobber a newer one (e.g. an enable() call started after it) --
+   * see that method's doc comment. Never mutated outside an async read,
+   * and never by anything that prompts. */
+  permission: NotifierPermission = $state("default");
+  /** Which notifier is backing `permission`/`enable()` -- "desktop" inside
+   * the AgentsView desktop shell, "browser" otherwise. Read by the
+   * settings panel to choose non-"browser" copy when running in the
+   * shell. */
+  notifierKind: "browser" | "desktop" = $state(getNotifier().kind);
+  /** True when the most recent `enable()` call's `requestPermission()`
+   * itself rejected (a transient IPC/plugin-load failure, not a real
+   * denial) -- distinct from `permission`, which in that case is reset
+   * to "default" and can't by itself tell the settings panel this was
+   * an error rather than an ordinary not-yet-decided state. Cleared at
+   * the start of every `enable()` call, so a retry that succeeds (or
+   * fails a "normal" way, e.g. a real denial) stops showing it. */
+  requestFailed: boolean = $state(false);
+  /** Bumped by every call into `applyPermissionRead`; only the read that
+   * is still the latest when it resolves may write `permission`. */
+  private permissionReadGeneration = 0;
+  /** Invoked so a caller (the poll runner) can run an immediate check
+   * instead of waiting for the next timer tick or SSE event. Fired by
+   * `refreshPermission()` only when its read settles on "granted" where
+   * the field previously read something else (covers permission granted
+   * through the OS outside the app, which only a background read would
+   * otherwise observe) -- but by every successful `enable()` regardless
+   * of whether permission just changed, since re-enabling while already
+   * granted (no transition) can just as easily be uncovering an existing
+   * threshold crossing. */
+  onPermissionGranted: (() => void) | null = null;
 
   constructor(private readonly storage: Storage | null = getLocalStorage()) {
     this.hydrate();
@@ -275,37 +299,119 @@ export class RateLimitAlertSettingsStore {
     }
   }
 
-  /** Reads (never requests) the browser's current permission state. */
+  /** Reads (never requests) the active notifier's current, authoritative
+   * permission state -- never the synchronous `getPermission()` placeholder,
+   * which `applyPermissionRead` would just overwrite moments later anyway.
+   * Safe to call in the background (construction, a cross-tab storage
+   * event, a poll that finds permission not yet granted): it only ever
+   * reads. Fires `onPermissionGranted` itself on a transition into
+   * "granted" -- unlike `enable()` below, nothing here needs to sequence
+   * that after some other synchronous state change. */
   refreshPermission(): void {
-    this.permission = notificationApiSupported() ? Notification.permission : "unsupported";
+    const notifier = getNotifier();
+    this.notifierKind = notifier.kind;
+    void this.applyPermissionRead(() => notifier.readPermission()).then(({ becameGranted }) => {
+      if (becameGranted) this.onPermissionGranted?.();
+    });
   }
 
-  /** Turns the master toggle on. Requests permission when it hasn't
-   * been decided yet — the browser only shows a prompt in that case,
-   * and only because this is called from the toggle's own onchange
-   * handler (a user gesture), never automatically. Returns true when
-   * notifications end up enabled; on denial or an unsupported browser,
-   * the toggle stays off and this returns false so the caller can
-   * explain why. */
+  /** Runs one permission read/request `op` under a generation counter, so
+   * only the read that's still the latest when it resolves writes
+   * `permission` -- the single place that field is ever assigned. Without
+   * this, two overlapping reads -- e.g. the constructor's own
+   * `refreshPermission()` and a near-simultaneous `enable()` call -- can
+   * resolve out of order: an older read started first but finishing later
+   * would otherwise clobber a newer, more accurate result (concretely:
+   * enable() grants and stores "granted", then the constructor's earlier,
+   * slower read resolves with the "default"/"denied" it observed before
+   * the grant and overwrites it, leaving the runner stuck skipping
+   * check() until a later refresh). A superseded read's `becameGranted`
+   * is always false, since it never gets to compare against or write the
+   * current `permission`.
+   *
+   * Returns the resolved permission (regardless of whether it was
+   * applied -- `enable()` needs it either way to decide whether to
+   * prompt) and whether this read caused the transition into "granted".
+   * Callers decide when to act on `becameGranted` rather than this method
+   * firing `onPermissionGranted` itself, since the right moment can
+   * depend on what the caller does next -- see `enable()`, which must
+   * finish setting `enabled` first. */
+  private async applyPermissionRead(
+    op: () => Promise<NotifierPermission>,
+  ): Promise<{ permission: NotifierPermission; becameGranted: boolean }> {
+    const generation = ++this.permissionReadGeneration;
+    const permission = await op();
+    if (generation !== this.permissionReadGeneration) return { permission, becameGranted: false };
+    const becameGranted = permission === "granted" && this.permission !== "granted";
+    this.permission = permission;
+    return { permission, becameGranted };
+  }
+
+  /** Turns the master toggle on. Requests permission from this user
+   * gesture (never automatically); returns true when notifications end
+   * up enabled, false (with the toggle reverted) on denial or an
+   * unsupported notifier.
+   *
+   * The two notifiers gate the request differently: browsers only need
+   * one prompt while permission is undecided ("default") -- requesting
+   * again after a real "denied" is pointless, since a browser's
+   * requestPermission() just re-resolves "denied" without UI. The
+   * desktop notifier's state is platform-dependent --
+   * tauri-plugin-notification's Windows shim initializes to "denied"
+   * rather than "default" before the user has ever been asked (roborev
+   * finding, kata 50c6) -- so gating on "default" there would leave
+   * Windows users unable to ever request permission; request whenever
+   * it isn't already granted instead. */
   async enable(): Promise<boolean> {
-    if (!notificationApiSupported()) {
-      this.permission = "unsupported";
+    const notifier = getNotifier();
+    this.notifierKind = notifier.kind;
+    this.requestFailed = false;
+    if (!notifier.isSupported()) {
+      await this.applyPermissionRead(async () => "unsupported");
       this.setEnabled(false);
       return false;
     }
 
-    let permission = Notification.permission;
-    if (permission === "default") {
-      permission = await Notification.requestPermission();
+    let read = await this.applyPermissionRead(() => notifier.readPermission());
+    const shouldRequest =
+      notifier.kind === "desktop" ? read.permission !== "granted" : read.permission === "default";
+    if (shouldRequest) {
+      try {
+        read = await this.applyPermissionRead(() => notifier.requestPermission());
+      } catch (err) {
+        // Unlike readPermission() (documented to never reject),
+        // requestPermission() has no such contract -- the desktop path's
+        // dynamic plugin import, or its IPC call, can genuinely fail
+        // here. Treat it the same as a request that simply didn't grant:
+        // keep alerts off and fall back to "default" (the same
+        // not-yet-resolved placeholder readPermission() itself uses on
+        // its own failure path). `requestFailed` lets the settings panel
+        // show a distinct "something went wrong" message instead of the
+        // ordinary not-yet-decided copy for "default".
+        console.error("[rateLimitAlertSettings] requestPermission() failed", err);
+        await this.applyPermissionRead(async () => "default");
+        this.requestFailed = true;
+        this.setEnabled(false);
+        return false;
+      }
     }
-    this.permission = permission;
 
-    if (permission !== "granted") {
+    if (read.permission !== "granted") {
       this.setEnabled(false);
       return false;
     }
 
     this.setEnabled(true);
+    // Fired on every successful enable(), not just a permission
+    // transition -- roborev-ci finding: re-enabling the toggle while
+    // permission was already granted (e.g. the user disabled and
+    // re-enabled) never changes `permission`, so gating this on
+    // becameGranted left an existing threshold crossing waiting for the
+    // next poll/SSE event instead of checking immediately. Fired only
+    // after `enabled` is already true, so the check() it triggers (see
+    // the poll runner's onPermissionGranted wiring) sees notifications
+    // as actually on rather than no-op'ing.
+    this.onPermissionGranted?.();
     return true;
   }
 

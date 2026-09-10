@@ -2,6 +2,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import { RateLimitAlertSettingsStore } from "./rateLimitAlertSettings.svelte.js";
 
+// notifier.ts's DesktopNotifier dynamically imports the official plugin
+// package for requestPermission, and invokes the underlying Tauri
+// commands directly for readPermission/notify (bypassing the plugin's
+// own cached/fire-and-forget JS wrappers -- see its doc comment), so the
+// desktop notifier permission flow tests below need both mocked (see
+// notifier.test.ts for the same pattern).
+const invokeMock = vi.hoisted(() => vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>());
+const requestPermissionMock = vi.hoisted(() => vi.fn<() => Promise<string>>());
+vi.mock("@tauri-apps/plugin-notification", () => ({
+  isPermissionGranted: vi.fn(),
+  requestPermission: requestPermissionMock,
+}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+
+/** Sets/clears `window.__TAURI_INTERNALS__`, the Tauri v2 IPC bridge
+ * notifier.ts's isDesktopShell() detects (see its doc comment). */
+function setDesktopShell(present: boolean): void {
+  if (present) {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  } else {
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  }
+}
+
 class FakeNotification {
   static permission: NotificationPermission = "default";
   static requestPermission = vi.fn<() => Promise<NotificationPermission>>();
@@ -48,6 +72,7 @@ describe("RateLimitAlertSettingsStore permission flow", () => {
   it("reports unsupported and never prompts (on construction, hydrate(), disable(), or enable()) when Notification does not exist", async () => {
     delete (globalThis as { Notification?: unknown }).Notification;
     const store = new RateLimitAlertSettingsStore();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // settle construction's own async read
     expect(store.permission).toBe("unsupported");
     store.hydrate();
     store.disable();
@@ -56,6 +81,129 @@ describe("RateLimitAlertSettingsStore permission flow", () => {
     expect(result).toBe(false);
     expect(store.enabled).toBe(false);
     expect(store.permission).toBe("unsupported");
+  });
+});
+
+describe("RateLimitAlertSettingsStore desktop notifier permission flow", () => {
+  beforeEach(() => {
+    setDesktopShell(true);
+    invokeMock.mockReset();
+    requestPermissionMock.mockReset();
+  });
+
+  afterEach(() => {
+    setDesktopShell(false);
+    vi.restoreAllMocks();
+  });
+
+  // Windows' tauri-plugin-notification shim initializes to "denied" (not
+  // "default") before the user has ever been asked, so enable() must
+  // still request whenever permission isn't already granted -- gating on
+  // "default" (the browser notifier's rule) would leave Windows users
+  // unable to ever request.
+  it.each([
+    [false, "granted", true, true, true, "granted"],
+    [false, "denied", true, false, false, "denied"],
+    [true, "granted", false, true, true, "granted"],
+  ] as const)(
+    "initialGranted=%s, request resolves %s -> requested=%s, result=%s, enabled=%s, permission=%s",
+    async (initialGranted, requestResult, expectRequested, expectResult, expectEnabled, expectPermission) => {
+      invokeMock.mockResolvedValue(initialGranted);
+      requestPermissionMock.mockResolvedValue(requestResult);
+      const store = new RateLimitAlertSettingsStore();
+
+      const result = await store.enable();
+
+      expect(requestPermissionMock.mock.calls.length > 0).toBe(expectRequested);
+      expect(result).toBe(expectResult);
+      expect(store.enabled).toBe(expectEnabled);
+      expect(store.permission).toBe(expectPermission);
+    },
+  );
+
+  it("keeps alerts off, sets requestFailed, and never throws when requestPermission() itself rejects (unlike readPermission, which never does)", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    invokeMock.mockResolvedValue(false);
+    requestPermissionMock.mockRejectedValue(new Error("ipc timeout"));
+    const store = new RateLimitAlertSettingsStore();
+
+    await expect(store.enable()).resolves.toBe(false);
+
+    expect(store.enabled).toBe(false);
+    expect(store.permission).toBe("default");
+    expect(store.requestFailed).toBe(true);
+    expect(consoleError).toHaveBeenCalled();
+  });
+
+  it("never calls requestPermission on construction/hydration, even on the desktop path (background reads never prompt)", async () => {
+    invokeMock.mockResolvedValue(false);
+    new RateLimitAlertSettingsStore();
+    // A macrotask boundary flushes every pending microtask regardless of
+    // how many .then()/await hops deep the constructor's own async
+    // refreshPermission() is.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requestPermissionMock).not.toHaveBeenCalled();
+  });
+
+  it("does not clobber a newer permission with an older read that resolves later (generation-gated ownership)", async () => {
+    // Roborev-ci finding: the constructor's own refreshPermission() read
+    // can still be in flight when enable() runs and grants; if that older
+    // read is allowed to write `permission` once it finally resolves, it
+    // overwrites the fresh "granted" with the stale value it observed
+    // before the grant, and the runner goes back to skipping check().
+    let resolveConstructorRead!: (granted: boolean) => void;
+    invokeMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveConstructorRead = resolve;
+      }),
+    );
+    const store = new RateLimitAlertSettingsStore(); // kicks off the slow read above
+
+    invokeMock.mockResolvedValue(true);
+    requestPermissionMock.mockResolvedValue("granted");
+    await store.enable(); // a newer read+request, resolves before the constructor's
+    expect(store.permission).toBe("granted");
+
+    resolveConstructorRead(false); // the stale, slower read finally settles
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(store.permission).toBe("granted"); // unchanged by the stale read
+  });
+
+  it("fires onPermissionGranted exactly once on the transition to granted, after enabled is already true", async () => {
+    invokeMock.mockResolvedValue(false);
+    requestPermissionMock.mockResolvedValue("granted");
+    const store = new RateLimitAlertSettingsStore();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // settle construction's own read
+
+    const onGranted = vi.fn(() => expect(store.enabled).toBe(true));
+    store.onPermissionGranted = onGranted;
+    await store.enable();
+
+    expect(onGranted).toHaveBeenCalledOnce();
+  });
+
+  it("also fires onPermissionGranted on a successful enable() when permission was already granted (no transition) -- re-enabling can uncover an existing crossing", async () => {
+    invokeMock.mockResolvedValue(true);
+    const store = new RateLimitAlertSettingsStore();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const onGranted = vi.fn();
+    store.onPermissionGranted = onGranted;
+    await expect(store.enable()).resolves.toBe(true);
+
+    expect(onGranted).toHaveBeenCalledOnce();
+  });
+
+  it("recovers from a rejected permission read on a later refreshPermission() call, never throwing in between", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    invokeMock.mockRejectedValueOnce(new Error("ipc timeout")).mockResolvedValueOnce(true);
+    const store = new RateLimitAlertSettingsStore();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(store.permission).toBe("default");
+
+    store.refreshPermission(); // the non-prompting recheck rateLimitAlertRunner.check() calls each poll
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(store.permission).toBe("granted");
   });
 });
 
@@ -210,6 +358,7 @@ describe("RateLimitAlertSettingsStore cross-tab sync", () => {
     FakeNotification.permission = "granted";
 
     dispatchStorageEvent("agentsview-rate-limit-alerts");
+    await new Promise((resolve) => setTimeout(resolve, 0)); // settle the storage handler's own async read
     expect(a.enabled).toBe(true);
     expect(a.permission).toBe("granted");
   });

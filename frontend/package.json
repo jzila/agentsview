@@ -21,6 +21,8 @@
     "@kenn-io/kit-ui": "git+https://github.com/kenn-io/kit-ui.git#b4227114b3f6cc5edaa9a7ebf6cab7dbec2f527e",
     "@lucide/svelte": "1.34.0",
     "@tanstack/virtual-core": "3.17.8",
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-notification": "2.4.0",
     "d3-hierarchy": "3.1.2",
     "d3-scale": "4.0.2",
     "d3-time": "3.1.0",
