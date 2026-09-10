@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/config"
 	duckdbsync "go.kenn.io/agentsview/internal/duckdb"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/pathutil"
 	"go.kenn.io/agentsview/internal/server"
 	syncpkg "go.kenn.io/agentsview/internal/sync"
@@ -480,6 +481,7 @@ func openDuckDBServeStore(
 	if len(appCfg.CustomModelPricing) > 0 {
 		store.SetCustomPricing(appCfg.CustomModelPricing)
 	}
+	store.SetEnergyConfig(energy.Scenario(appCfg.Energy.Scenario), appCfg.Energy.Overrides)
 	if appCfg.CursorSecret != "" {
 		secret, decErr := base64.StdEncoding.DecodeString(appCfg.CursorSecret)
 		if decErr != nil {

@@ -17,6 +17,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 	"go.kenn.io/agentsview/internal/parser"
@@ -70,6 +71,11 @@ type UsageDailyConfig struct {
 	Offline   bool
 	NoSync    bool
 	Timezone  string
+	// Energy adds an estimated-energy column to the table view (see
+	// internal/energy and docs/internal/energy-model.md). The JSON view
+	// always includes energy_micro_wh/energy_status; this flag only
+	// changes the human-readable table.
+	Energy bool
 }
 
 // resolveUsageWindow resolves the raw --since/--until flags into concrete
@@ -190,7 +196,7 @@ func runUsageDaily(cfg UsageDailyConfig) {
 		return
 	}
 
-	printDailyTable(result, cfg.Breakdown)
+	printDailyTable(result, cfg.Breakdown, cfg.Energy)
 	if note := noTokenDataNote(cfg.Agent, result.Totals); note != "" {
 		fmt.Fprintln(os.Stderr, note)
 	}
@@ -224,17 +230,30 @@ type UsageStatuslineConfig struct {
 	Agent   string
 	Offline bool
 	NoSync  bool
+	// Energy adds an estimated-energy (Wh) figure alongside cost, off by
+	// default (see internal/energy and docs/internal/energy-model.md),
+	// matching usage daily --energy's flag style. Unlike that command,
+	// whose JSON view always includes energy_micro_wh/energy_status, the
+	// statusline's JSON view also gates on this flag: a statusline is
+	// invoked far more often (every prompt render in some integrations),
+	// so a caller that never opts in should not pay to compute or receive
+	// a figure it does not use.
+	Energy bool
 }
 
 // usageStatuslineReport is the machine-readable form of the statusline. It
 // carries the same facts as the human line and nothing more: today's cost,
-// the day it covers, and the agent filter that produced it. Cost stays a
-// money.Money so callers read exact microdollars instead of scraping the
-// formatted string.
+// the day it covers, the agent filter that produced it, and, when
+// UsageStatuslineConfig.Energy is set, the same estimated-energy figure
+// `usage daily`'s energy_micro_wh/energy_status fields report. Cost and
+// energy stay in their exact wire types (money.Money, micro-Wh) so callers
+// read exact values instead of scraping the formatted string.
 type usageStatuslineReport struct {
-	Date  string      `json:"date"`
-	Cost  money.Money `json:"cost"`
-	Agent string      `json:"agent,omitempty"`
+	Date          string      `json:"date"`
+	Cost          money.Money `json:"cost"`
+	Agent         string      `json:"agent,omitempty"`
+	EnergyMicroWh int64       `json:"energy_micro_wh,omitzero"`
+	EnergyStatus  string      `json:"energy_status,omitempty"`
 }
 
 func usageDateForTimezone(now time.Time, timezone string) string {
@@ -253,6 +272,10 @@ func runUsageStatusline(cfg UsageStatuslineConfig) {
 		To:       today,
 		Agent:    cfg.Agent,
 		Timezone: timezone,
+		// The statusline runs far more often than a one-shot report (once
+		// per prompt render in some integrations), so it only pays for
+		// energy estimation when --energy was actually requested.
+		SkipEnergy: !cfg.Energy,
 	}
 
 	ctx := context.Background()
@@ -279,15 +302,15 @@ func runUsageStatusline(cfg UsageStatuslineConfig) {
 	}
 
 	if cfg.JSON {
-		printUsageStatuslineJSON(result, cfg.Agent, today)
+		printUsageStatuslineJSON(result, cfg.Agent, today, cfg.Energy)
 		return
 	}
 
-	printUsageStatusline(result, cfg.Agent)
+	printUsageStatusline(result, cfg.Agent, cfg.Energy)
 }
 
 func printUsageStatuslineJSON(
-	result db.DailyUsageResult, agent, date string,
+	result db.DailyUsageResult, agent, date string, showEnergy bool,
 ) {
 	enc := jsontext.NewEncoder(os.Stdout, jsontext.WithIndent("  "))
 	report := usageStatuslineReport{
@@ -295,19 +318,28 @@ func printUsageStatuslineJSON(
 		Cost:  result.Totals.TotalCost,
 		Agent: agent,
 	}
+	if showEnergy {
+		report.EnergyMicroWh = result.Totals.EnergyMicroWh
+		report.EnergyStatus = result.Totals.EnergyStatus
+	}
 	if err := json.MarshalEncode(enc, report); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func printUsageStatusline(result db.DailyUsageResult, agent string) {
+func printUsageStatusline(result db.DailyUsageResult, agent string, showEnergy bool) {
+	line := fmtCost(result.Totals.TotalCost)
+	if showEnergy {
+		line += " / " + energy.FormatMicroWh(result.Totals.EnergyMicroWh)
+		if result.Totals.EnergyStatus == "no_rate" {
+			line += "*"
+		}
+	}
 	if agent != "" {
-		fmt.Printf("%s today (%s)\n",
-			fmtCost(result.Totals.TotalCost), agent)
+		fmt.Printf("%s today (%s)\n", line, agent)
 	} else {
-		fmt.Printf("%s today\n",
-			fmtCost(result.Totals.TotalCost))
+		fmt.Printf("%s today\n", line)
 	}
 }
 
@@ -316,6 +348,17 @@ func applyCustomPricing(database *db.DB, cfg config.Config) {
 		return
 	}
 	database.SetCustomPricing(cfg.CustomModelPricing)
+}
+
+// applyEnergyConfig installs the config.toml [energy] scenario and
+// per-model overrides (see internal/energy and docs/internal/energy-model.md)
+// on the direct database backend. A zero EnergyConfig is a no-op: the
+// estimator already defaults to the fit's mid scenario with no overrides.
+func applyEnergyConfig(database *db.DB, cfg config.Config) {
+	if cfg.Energy.Scenario == "" && len(cfg.Energy.Overrides) == 0 {
+		return
+	}
+	database.SetEnergyConfig(energy.Scenario(cfg.Energy.Scenario), cfg.Energy.Overrides)
 }
 
 // ensureFreshData makes sure the database reflects recent
@@ -548,6 +591,7 @@ func fetchHTTPDailyUsage(
 	q.Set("no_default_range", strconv.FormatBool(query.NoDefaultRange))
 	q.Set("breakdowns", strconv.FormatBool(query.Breakdowns))
 	q.Set("session_counts", strconv.FormatBool(query.SessionCounts))
+	q.Set("energy", strconv.FormatBool(!filter.SkipEnergy))
 	setIfNotEmpty := func(k, v string) {
 		if v != "" {
 			q.Set(k, v)
@@ -617,33 +661,41 @@ func fetchHTTPDailyUsage(
 }
 
 func printDailyTable(
-	result db.DailyUsageResult, breakdown bool,
+	result db.DailyUsageResult, breakdown bool, showEnergy bool,
 ) {
 	w := tabwriter.NewWriter(
 		os.Stdout, 0, 4, 2, ' ', 0,
 	)
 
-	fmt.Fprintln(w,
-		"DATE\tINPUT\tOUTPUT\tCACHE_CR\tCACHE_RD\tCOST\tMODELS")
-	fmt.Fprintln(w,
-		"----\t-----\t------\t--------\t--------\t----\t------")
+	header := "DATE\tINPUT\tOUTPUT\tCACHE_CR\tCACHE_RD\tCOST"
+	rule := "----\t-----\t------\t--------\t--------\t----"
+	if showEnergy {
+		header += "\tENERGY"
+		rule += "\t------"
+	}
+	header += "\tMODELS"
+	rule += "\t------"
+	fmt.Fprintln(w, header)
+	fmt.Fprintln(w, rule)
 
 	for _, day := range result.Daily {
 		models := joinModels(day.ModelsUsed)
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%s\t%s\n",
+		row := fmt.Sprintf("%s\t%d\t%d\t%d\t%d\t%s",
 			day.Date,
 			day.InputTokens,
 			day.OutputTokens,
 			day.CacheCreationTokens,
 			day.CacheReadTokens,
 			fmtCost(day.TotalCost),
-			models,
 		)
+		if showEnergy {
+			row += "\t" + fmtEnergyStatus(day.EnergyMicroWh, day.EnergyStatus)
+		}
+		fmt.Fprintf(w, "%s\t%s\n", row, models)
 
 		if breakdown {
 			for _, mb := range day.ModelBreakdowns {
-				fmt.Fprintf(w,
-					"  %s\t%d\t%d\t%d\t%d\t%s\t\n",
+				row := fmt.Sprintf("  %s\t%d\t%d\t%d\t%d\t%s",
 					mb.ModelName,
 					mb.InputTokens,
 					mb.OutputTokens,
@@ -651,19 +703,30 @@ func printDailyTable(
 					mb.CacheReadTokens,
 					fmtCost(mb.Cost),
 				)
+				if showEnergy {
+					row += "\t" + fmtEnergyStatus(mb.EnergyMicroWh, mb.EnergyStatus)
+				}
+				fmt.Fprintf(w, "%s\t\n", row)
 			}
 		}
 	}
 
-	fmt.Fprintln(w,
-		"----\t-----\t------\t--------\t--------\t----\t------")
-	fmt.Fprintf(w, "TOTAL\t%d\t%d\t%d\t%d\t%s\t\n",
+	rule = "----\t-----\t------\t--------\t--------\t----"
+	if showEnergy {
+		rule += "\t------"
+	}
+	fmt.Fprintln(w, rule)
+	totalRow := fmt.Sprintf("TOTAL\t%d\t%d\t%d\t%d\t%s",
 		result.Totals.InputTokens,
 		result.Totals.OutputTokens,
 		result.Totals.CacheCreationTokens,
 		result.Totals.CacheReadTokens,
 		fmtCost(result.Totals.TotalCost),
 	)
+	if showEnergy {
+		totalRow += "\t" + fmtEnergyStatus(result.Totals.EnergyMicroWh, result.Totals.EnergyStatus)
+	}
+	fmt.Fprintf(w, "%s\t\n", totalRow)
 
 	w.Flush()
 }
@@ -679,6 +742,26 @@ func localTimezone() string {
 // read as "free", so they render as "<$0.01" instead.
 func fmtCost(v money.Money) string {
 	return money.FormatUSD(v, money.DisplayCents)
+}
+
+// fmtEnergyStatus renders an estimated-energy figure for the table view.
+// A row (or an aggregate of rows) with no priced energy at all shows "n/a".
+// An aggregate where only some of its models lack a catalog rate ("no_rate")
+// still shows the sum over the models that do, marked "~" as partial, since
+// hiding a real number behind "n/a" whenever any one model in a mixed day
+// is unpriced would be far less useful than the cost column ever is.
+// "override" marks a config.toml override with "*".
+func fmtEnergyStatus(microWh int64, status string) string {
+	switch {
+	case microWh == 0 && status == string(energy.StatusNoRate):
+		return "n/a"
+	case status == string(energy.StatusNoRate):
+		return energy.FormatMicroWh(microWh) + "~"
+	case status == string(energy.StatusOverride):
+		return energy.FormatMicroWh(microWh) + "*"
+	default:
+		return energy.FormatMicroWh(microWh)
+	}
 }
 
 func joinModels(models []string) string {

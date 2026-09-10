@@ -13,6 +13,7 @@ import (
 	"github.com/ccoveille/go-safecast/v2"
 
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 	pricingpkg "go.kenn.io/agentsview/internal/pricing"
@@ -3811,11 +3812,13 @@ func duckUsageCTEFromRaw(
 }
 
 type duckUsageBucket struct {
-	inputTok  int
-	outputTok int
-	cacheCr   int
-	cacheRd   int
-	cost      money.Money
+	inputTok      int
+	outputTok     int
+	cacheCr       int
+	cacheRd       int
+	cost          money.Money
+	energyMicroWh int64
+	energyStatus  string
 }
 
 type duckUsageAggregateRow struct {
@@ -3835,10 +3838,16 @@ type duckUsageAggregateRow struct {
 	startedAt      string
 	inputTok       int
 	outputTok      int
-	cacheCr        int
-	cacheCr1h      int
-	cacheRd        int
-	billableInput  int
+	// reasoningTok is the row's raw reasoning_tokens_norm, unlike
+	// billableReason below which is always 0 (reasoning is folded into
+	// billableOutput for the request-scoped cost selection instead -- see
+	// billableOutput's comment). duckAggregateRowEnergy needs the raw value
+	// because it deliberately uses raw, non-request-scoped token counts.
+	reasoningTok  int
+	cacheCr       int
+	cacheCr1h     int
+	cacheRd       int
+	billableInput int
 	// Output-rate billable tokens. SQL folds reasoning-only rows into this
 	// value before grouping because reasoning is otherwise a row-level choice.
 	billableOutput        int
@@ -4095,6 +4104,8 @@ func duckSessionUsageBreakdownEntry(
 	ordinal int,
 	cost money.Money,
 	priced bool,
+	energyMicroWh int64,
+	energyStatus string,
 ) db.SessionUsageBreakdownEntry {
 	entry := db.SessionUsageBreakdownEntry{
 		Ordinal:                  ordinal,
@@ -4109,6 +4120,8 @@ func duckSessionUsageBreakdownEntry(
 		WebSearchRequests:        r.webSearchRequests,
 		Cost:                     cost,
 		HasCost:                  priced,
+		EnergyMicroWh:            energyMicroWh,
+		EnergyStatus:             energyStatus,
 	}
 	if r.messageOrdinal.Valid {
 		messageOrdinal := int(r.messageOrdinal.Int64)
@@ -4146,6 +4159,7 @@ func (s *Store) forEachDailyUsageAggregateRow(
 			source, message_ordinal, ts, pricing_ts,
 			input_tokens_norm AS input_tokens,
 			output_tokens_norm AS output_tokens,
+			reasoning_tokens_norm AS reasoning_tokens,
 			cache_create_norm AS cache_creation_tokens,
 			cache_create_1h_norm AS cache_creation_1h_tokens,
 			cache_read_norm AS cache_read_tokens,
@@ -4178,7 +4192,7 @@ func (s *Store) forEachDailyUsageAggregateRow(
 			&r.sessionID, &r.date, &r.project, &r.agent, &r.machine, &r.model,
 			&r.providerID,
 			&r.priceModel, &r.source, &r.messageOrdinal, &ts, &pricingTS,
-			&r.inputTok, &r.outputTok, &r.cacheCr, &r.cacheCr1h, &r.cacheRd,
+			&r.inputTok, &r.outputTok, &r.reasoningTok, &r.cacheCr, &r.cacheCr1h, &r.cacheRd,
 			&r.billableInput, &r.billableOutput, &r.billableReason,
 			&r.billableCacheCr, &r.billableCacheCr1h, &r.billableCacheRd,
 			&r.billableWebSearch,
@@ -4205,6 +4219,18 @@ func (s *Store) GetDailyUsage(
 	rateResolver, err := s.loadPricingResolver(ctx)
 	if err != nil {
 		return db.DailyUsageResult{}, err
+	}
+	// Built once for the whole request (see Store.energyEstimator) rather
+	// than per row, so a concurrent SetEnergyConfig can't split this result
+	// across two scenarios. Skipped entirely when f.SkipEnergy: a caller
+	// that only reads cost or tokens should not pay to parse the embedded
+	// fit or estimate energy for every row.
+	var energyEstimator *energy.Estimator
+	if !f.SkipEnergy {
+		energyEstimator, err = s.energyEstimator()
+		if err != nil {
+			return db.DailyUsageResult{}, err
+		}
 	}
 	type usageAccumKey struct {
 		date       string
@@ -4246,6 +4272,7 @@ func (s *Store) GetDailyUsage(
 			b = &duckUsageBucket{}
 			accum[key] = b
 		}
+		requestScoped := db.UsageSourceIsRequestScoped(r.source) || r.messageOrdinal.Valid
 		cost, savings, _, _, priceErr := duckUsageAggregateResolvedCost(
 			r.model, r.priceModel, r.providerID, duckUsagePricingTimestamp(r.pricingTS),
 			r.inputTok, r.outputTok, r.cacheCr, r.cacheCr1h, r.cacheRd,
@@ -4254,7 +4281,7 @@ func (s *Store) GetDailyUsage(
 			r.billableWebSearch,
 			r.explicitCost,
 			r.reportedCostRows > 0,
-			db.UsageSourceIsRequestScoped(r.source) || r.messageOrdinal.Valid,
+			requestScoped,
 			rateResolver,
 		)
 		if priceErr != nil {
@@ -4268,6 +4295,11 @@ func (s *Store) GetDailyUsage(
 		b.outputTok += r.outputTok
 		b.cacheCr += r.cacheCr
 		b.cacheRd += r.cacheRd
+		if !f.SkipEnergy {
+			rowEnergyMicroWh, rowEnergyStatus := duckAggregateRowEnergy(energyEstimator, r, requestScoped, rateResolver)
+			b.energyMicroWh += rowEnergyMicroWh
+			b.energyStatus = energy.CombineStatus(b.energyStatus, rowEnergyStatus)
+		}
 		sc := sessionCosts[r.sessionID]
 		if sc.estimated == nil {
 			sc.estimated = map[usageAccumKey]money.Money{}
@@ -4349,11 +4381,13 @@ func (s *Store) GetDailyUsage(
 	}
 
 	type dayMaps struct {
-		models    map[string]duckUsageBucket
-		projects  map[string]duckUsageBucket
-		agents    map[string]duckUsageBucket
-		machines  map[string]duckUsageBucket
-		totalCost money.Money
+		models             map[string]duckUsageBucket
+		projects           map[string]duckUsageBucket
+		agents             map[string]duckUsageBucket
+		machines           map[string]duckUsageBucket
+		totalCost          money.Money
+		totalEnergyMicroWh int64
+		totalEnergyStatus  string
 	}
 	days := map[string]*dayMaps{}
 	for key, b := range accum {
@@ -4375,6 +4409,8 @@ func (s *Store) GetDailyUsage(
 			return db.DailyUsageResult{}, fmt.Errorf(
 				"summing duckdb daily cost: %w", err)
 		}
+		day.totalEnergyMicroWh += b.energyMicroWh
+		day.totalEnergyStatus = energy.CombineStatus(day.totalEnergyStatus, b.energyStatus)
 		if f.Breakdowns {
 			if err := addUsageBucket(day.projects, key.project, *b); err != nil {
 				return db.DailyUsageResult{}, err
@@ -4410,9 +4446,13 @@ func (s *Store) GetDailyUsage(
 				CacheCreationTokens: b.cacheCr,
 				CacheReadTokens:     b.cacheRd,
 				Cost:                b.cost,
+				EnergyMicroWh:       b.energyMicroWh,
+				EnergyStatus:        b.energyStatus,
 			})
 		}
 		entry.TotalCost = day.totalCost
+		entry.EnergyMicroWh = day.totalEnergyMicroWh
+		entry.EnergyStatus = day.totalEnergyStatus
 		if f.Breakdowns {
 			for _, project := range sortedUsageBucketKeys(day.projects) {
 				b := day.projects[project]
@@ -4423,6 +4463,8 @@ func (s *Store) GetDailyUsage(
 					CacheCreationTokens: b.cacheCr,
 					CacheReadTokens:     b.cacheRd,
 					Cost:                b.cost,
+					EnergyMicroWh:       b.energyMicroWh,
+					EnergyStatus:        b.energyStatus,
 				})
 			}
 			for _, agent := range sortedUsageBucketKeys(day.agents) {
@@ -4434,6 +4476,8 @@ func (s *Store) GetDailyUsage(
 					CacheCreationTokens: b.cacheCr,
 					CacheReadTokens:     b.cacheRd,
 					Cost:                b.cost,
+					EnergyMicroWh:       b.energyMicroWh,
+					EnergyStatus:        b.energyStatus,
 				})
 			}
 			for _, machine := range sortedUsageBucketKeys(day.machines) {
@@ -4447,6 +4491,8 @@ func (s *Store) GetDailyUsage(
 						CacheCreationTokens: b.cacheCr,
 						CacheReadTokens:     b.cacheRd,
 						Cost:                b.cost,
+						EnergyMicroWh:       b.energyMicroWh,
+						EnergyStatus:        b.energyStatus,
 					},
 				)
 			}
@@ -4456,6 +4502,8 @@ func (s *Store) GetDailyUsage(
 		result.Totals.OutputTokens += entry.OutputTokens
 		result.Totals.CacheCreationTokens += entry.CacheCreationTokens
 		result.Totals.CacheReadTokens += entry.CacheReadTokens
+		result.Totals.EnergyMicroWh += entry.EnergyMicroWh
+		result.Totals.EnergyStatus = energy.CombineStatus(result.Totals.EnergyStatus, entry.EnergyStatus)
 		result.Totals.TotalCost, err = money.Add(
 			result.Totals.TotalCost, entry.TotalCost)
 		if err != nil {
@@ -4503,6 +4551,8 @@ func addUsageBucket(
 	cur.outputTok += b.outputTok
 	cur.cacheCr += b.cacheCr
 	cur.cacheRd += b.cacheRd
+	cur.energyMicroWh += b.energyMicroWh
+	cur.energyStatus = energy.CombineStatus(cur.energyStatus, b.energyStatus)
 	var err error
 	cur.cost, err = money.Add(cur.cost, b.cost)
 	if err != nil {
@@ -4551,6 +4601,7 @@ func (s *Store) forEachSessionUsageAggregateRow(
 			pricing_ts, display_name, started_at,
 			input_tokens_norm AS input_tokens,
 			output_tokens_norm AS output_tokens,
+			reasoning_tokens_norm AS reasoning_tokens,
 			snapshot_deduplicated_output_tokens,
 			cache_create_norm AS cache_creation_tokens,
 			cache_create_1h_norm AS cache_creation_1h_tokens,
@@ -4585,7 +4636,7 @@ func (s *Store) forEachSessionUsageAggregateRow(
 			&r.sessionID, &r.project, &r.agent, &r.model, &r.providerID,
 			&r.priceModel, &r.source, &r.messageOrdinal, &ts, &pricingTS,
 			&r.displayName, &startedAt,
-			&r.inputTok, &r.outputTok, &r.snapshotDedupOutput,
+			&r.inputTok, &r.outputTok, &r.reasoningTok, &r.snapshotDedupOutput,
 			&r.cacheCr, &r.cacheCr1h, &r.cacheRd,
 			&r.billableInput, &r.billableOutput, &r.billableReason,
 			&r.billableCacheCr, &r.billableCacheCr1h, &r.billableCacheRd,
@@ -4680,11 +4731,20 @@ func (s *Store) GetTopSessionsByCost(
 	if err != nil {
 		return nil, err
 	}
+	// Built once for the whole request (see Store.energyEstimator) rather
+	// than per row, so a concurrent SetEnergyConfig can't split this result
+	// across two scenarios.
+	energyEstimator, err := s.energyEstimator()
+	if err != nil {
+		return nil, err
+	}
 	type acc struct {
 		row               db.TopSessionEntry
 		tokens            int
 		cost              money.Money
 		authoritativeCost *money.Money
+		energyMicroWh     int64
+		energyStatus      string
 	}
 	bySession := map[string]*acc{}
 	err = s.forEachSessionUsageAggregateRow(
@@ -4697,6 +4757,7 @@ func (s *Store) GetTopSessionsByCost(
 				}}
 				bySession[r.sessionID] = a
 			}
+			requestScoped := db.UsageSourceIsRequestScoped(r.source) || r.messageOrdinal.Valid
 			cost, _, _, _, priceErr := duckUsageAggregateResolvedCost(
 				r.model, r.priceModel, r.providerID, duckUsagePricingTimestamp(r.pricingTS),
 				r.inputTok, r.outputTok, r.cacheCr, r.cacheCr1h, r.cacheRd,
@@ -4705,7 +4766,7 @@ func (s *Store) GetTopSessionsByCost(
 				r.billableWebSearch,
 				r.explicitCost,
 				r.reportedCostRows > 0,
-				db.UsageSourceIsRequestScoped(r.source) || r.messageOrdinal.Valid,
+				requestScoped,
 				rateResolver,
 			)
 			if priceErr != nil {
@@ -4720,6 +4781,9 @@ func (s *Store) GetTopSessionsByCost(
 			if priceErr != nil {
 				return fmt.Errorf("summing duckdb top-session cost: %w", priceErr)
 			}
+			rowEnergyMicroWh, rowEnergyStatus := duckAggregateRowEnergy(energyEstimator, r, requestScoped, rateResolver)
+			a.energyMicroWh += rowEnergyMicroWh
+			a.energyStatus = energy.CombineStatus(a.energyStatus, rowEnergyStatus)
 			if f.Model == "" && f.ExcludeModel == "" && r.authoritativeCostRows > 0 {
 				v := money.Money{Microdollars: r.authoritativeCost}
 				a.authoritativeCost = &v
@@ -4737,6 +4801,8 @@ func (s *Store) GetTopSessionsByCost(
 		} else {
 			a.row.Cost = a.cost
 		}
+		a.row.EnergyMicroWh = a.energyMicroWh
+		a.row.EnergyStatus = a.energyStatus
 		out = append(out, a.row)
 	}
 	return db.SortAndLimitTopSessions(
@@ -4880,6 +4946,13 @@ func (s *Store) GetSessionUsage(
 	if err != nil {
 		return nil, err
 	}
+	// Built once for the whole request (see Store.energyEstimator) rather
+	// than per row, so a concurrent SetEnergyConfig can't split this result
+	// across two scenarios.
+	energyEstimator, err := s.energyEstimator()
+	if err != nil {
+		return nil, err
+	}
 	var breakdownRows []duckSessionUsageRow
 	breakdownCount := 0
 	if includeBreakdown {
@@ -4895,6 +4968,8 @@ func (s *Store) GetSessionUsage(
 	var totalCost money.Money
 	var authoritativeCost *money.Money
 	var hasComputedCost, hasReportedCost bool
+	var sessionEnergyMicroWh int64
+	var sessionEnergyStatus string
 	deduplicatedOutputTokens := 0
 	// hasRows is "any contributing row processed" and feeds cost
 	// aggregation only. HasTokenData is computed from the session
@@ -4911,6 +4986,7 @@ func (s *Store) GetSessionUsage(
 				v := money.Money{Microdollars: r.authoritativeCost}
 				authoritativeCost = &v
 			}
+			requestScoped := db.UsageSourceIsRequestScoped(r.source) || r.messageOrdinal.Valid
 			cost, _, priced, contributes, priceErr := duckUsageAggregateResolvedCost(
 				r.model, r.priceModel, r.providerID, duckUsagePricingTimestamp(r.pricingTS),
 				r.inputTok, r.outputTok, r.cacheCr, r.cacheCr1h, r.cacheRd,
@@ -4919,7 +4995,7 @@ func (s *Store) GetSessionUsage(
 				r.billableWebSearch,
 				r.explicitCost,
 				r.reportedCostRows > 0,
-				db.UsageSourceIsRequestScoped(r.source) || r.messageOrdinal.Valid,
+				requestScoped,
 				rateResolver,
 			)
 			if priceErr != nil {
@@ -4937,6 +5013,9 @@ func (s *Store) GetSessionUsage(
 			if priceErr != nil {
 				return fmt.Errorf("summing duckdb session usage: %w", priceErr)
 			}
+			rowEnergyMicroWh, rowEnergyStatus := duckAggregateRowEnergy(energyEstimator, r, requestScoped, rateResolver)
+			sessionEnergyMicroWh += rowEnergyMicroWh
+			sessionEnergyStatus = energy.CombineStatus(sessionEnergyStatus, rowEnergyStatus)
 			if r.reportedCostRows > 0 {
 				hasReportedCost = true
 			}
@@ -4962,8 +5041,9 @@ func (s *Store) GetSessionUsage(
 		if !contributes {
 			continue
 		}
+		rowEnergyMicroWh, rowEnergyStatus := duckSessionUsageRowEnergy(energyEstimator, r, rateResolver)
 		breakdown = append(breakdown, duckSessionUsageBreakdownEntry(
-			r, len(breakdown)+1, cost, priced))
+			r, len(breakdown)+1, cost, priced, rowEnergyMicroWh, rowEnergyStatus))
 	}
 	if authoritativeCost != nil && len(breakdown) > 0 {
 		weights := make([]money.Money, len(breakdown))
@@ -4988,6 +5068,8 @@ func (s *Store) GetSessionUsage(
 		UnpricedModels:    sortedBoolKeys(unpriced),
 		BreakdownCount:    breakdownCount,
 		Breakdown:         breakdown,
+		EnergyMicroWh:     sessionEnergyMicroWh,
+		EnergyStatus:      sessionEnergyStatus,
 	}
 	if authoritativeCost != nil {
 		out.HasCost = true

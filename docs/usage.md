@@ -770,6 +770,11 @@ estimate when the model is priced. The rows come from the same session usage API
 with `?breakdown=true` — see
 [`agentsview session usage`](/docs/session-api/#agentsview-session-usage).
 
+The session usage API also reports an estimated energy figure (`energy_micro_wh`
+and `energy_status`) alongside cost, computed the same way from the same token
+counts. See [Energy Estimates](/docs/token-usage/#energy-estimates) for the
+methodology and the Usage page's **Energy** mode.
+
 For aggregate token usage and estimated cost reports across all sessions, see
 the [Token Usage & Costs](/docs/token-usage/) page and the
 [`agentsview usage daily`](/docs/commands/#agentsview-usage-daily) CLI command.

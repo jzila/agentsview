@@ -8,6 +8,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/activity"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 )
@@ -259,6 +260,8 @@ func combineSubagentUsageFromRows(
 		return nil, err
 	}
 	out.Breakdown = combined.breakdown
+	out.EnergyMicroWh = combined.energyMicroWh
+	out.EnergyStatus = combined.energyStatus
 	out.Models, err = sortedKeys(ctx, combined.models)
 	if err != nil {
 		return nil, err
@@ -394,11 +397,17 @@ func sessionTokenExpectationFromSession(
 }
 
 type combinedUsageRows struct {
-	cost               money.Money
-	hasComputedCost    bool
-	hasReportedCost    bool
-	hasCostSettlement  bool
-	allPriced          bool
+	cost              money.Money
+	hasComputedCost   bool
+	hasReportedCost   bool
+	hasCostSettlement bool
+	allPriced         bool
+	// energyMicroWh and energyStatus sum each contributing row's own
+	// energy estimate (see activity.UsageRow.EnergyMicroWh); unlike cost,
+	// energy has no session-level "authoritative settlement" to allocate,
+	// so every contributing row's estimate is summed directly.
+	energyMicroWh      int64
+	energyStatus       string
 	models             map[string]struct{}
 	unpriced           map[string]struct{}
 	breakdown          []db.SessionUsageBreakdownEntry
@@ -453,6 +462,8 @@ func accumulateCombinedUsageRows(
 		combined.usageRowsBySession[usageRowSourceSessionID(row)] = struct{}{}
 		combined.outputBySession[row.SessionID] += row.OutputTokens
 		combined.models[row.Model] = struct{}{}
+		combined.energyMicroWh += row.EnergyMicroWh
+		combined.energyStatus = energy.CombineStatus(combined.energyStatus, row.EnergyStatus)
 		out.BreakdownCount++
 		if includeBreakdown {
 			combined.breakdown = append(combined.breakdown, usageRowBreakdownEntry(
@@ -560,6 +571,8 @@ func combineSubagentUsageFromSessions(
 		}
 	}
 	out.Breakdown = combined.breakdown
+	out.EnergyMicroWh = combined.energyMicroWh
+	out.EnergyStatus = combined.energyStatus
 	out.TokenBreakdownComplete = breakdownComplete
 	if requireComplete {
 		out.HasTokenData = allSessionsHaveTokens
@@ -602,6 +615,14 @@ type sessionUsageAccumulator struct {
 	hasReportedCost bool
 	contributing    bool
 	allPriced       bool
+	// energyMicroWh and energyStatus sum every contributing session's own
+	// (already-estimated) total, the same way cost above is summed: each
+	// db.SessionUsage passed to add() already carries its own correct
+	// EnergyMicroWh/EnergyStatus from GetSessionUsage, so this only needs
+	// to add them up, gated by the same BreakdownCount > 0 "this session
+	// actually has usage" condition cost uses.
+	energyMicroWh int64
+	energyStatus  string
 }
 
 func newSessionUsageAccumulator(
@@ -648,6 +669,8 @@ func (combined *sessionUsageAccumulator) add(
 		} else {
 			combined.allPriced = false
 		}
+		combined.energyMicroWh += usage.EnergyMicroWh
+		combined.energyStatus = energy.CombineStatus(combined.energyStatus, usage.EnergyStatus)
 	}
 	combined.out.BreakdownCount += usage.BreakdownCount
 	for _, entry := range usage.Breakdown {
@@ -734,6 +757,8 @@ func usageRowBreakdownEntry(
 		WebSearchRequests:        row.WebSearchRequests,
 		Cost:                     cost,
 		HasCost:                  priced,
+		EnergyMicroWh:            row.EnergyMicroWh,
+		EnergyStatus:             row.EnergyStatus,
 	}
 	sourceSessionID := usageRowSourceSessionID(row)
 	if sourceSessionID != rootID {

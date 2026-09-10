@@ -22,6 +22,8 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/dbtest"
+	"go.kenn.io/agentsview/internal/export"
+	"go.kenn.io/agentsview/internal/money"
 	"go.kenn.io/agentsview/internal/server"
 )
 
@@ -1085,6 +1087,77 @@ func TestGetTerminalConfig(t *testing.T) {
 			`{"mode":"custom","custom_bin":""}`,
 		)
 		assertStatus(t, w, http.StatusBadRequest)
+	})
+}
+
+func TestGetSetEnergyConfig(t *testing.T) {
+	te := setup(t)
+
+	type energyRate struct {
+		TokenType        string `json:"token_type"`
+		WhPerMTokMicroWh int64  `json:"wh_per_mtok_micro_wh"`
+	}
+	type energyModel struct {
+		Model string       `json:"model"`
+		Rates []energyRate `json:"rates"`
+	}
+	type energyResp struct {
+		Scenario string        `json:"scenario"`
+		Models   []energyModel `json:"models"`
+	}
+	get := func(t *testing.T) energyResp {
+		w := te.get(t, "/api/v1/config/energy")
+		assertStatus(t, w, http.StatusOK)
+		var resp energyResp
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		return resp
+	}
+
+	t.Run("default scenario is mid with a nonzero effective table", func(t *testing.T) {
+		resp := get(t)
+		assert.Equal(t, "mid", resp.Scenario)
+		require.NotEmpty(t, resp.Models)
+		require.Len(t, resp.Models[0].Rates, 4)
+		assert.Greater(t, resp.Models[0].Rates[0].WhPerMTokMicroWh, int64(0))
+	})
+
+	t.Run("set and get roundtrips and changes the low/high magnitude", func(t *testing.T) {
+		mid := get(t)
+		w := te.post(t, "/api/v1/config/energy", `{"scenario":"high"}`)
+		assertStatus(t, w, http.StatusOK)
+		high := get(t)
+		assert.Equal(t, "high", high.Scenario)
+		assert.Greater(t, high.Models[0].Rates[0].WhPerMTokMicroWh, mid.Models[0].Rates[0].WhPerMTokMicroWh)
+	})
+
+	t.Run("invalid scenario is rejected", func(t *testing.T) {
+		w := te.post(t, "/api/v1/config/energy", `{"scenario":"extreme"}`)
+		assertStatus(t, w, http.StatusBadRequest)
+	})
+
+	// The scenario lives in config.toml, not the archive store, so a
+	// read-only store (DuckDB/PostgreSQL `serve` mode) must not block this.
+	t.Run("succeeds against a read-only store", func(t *testing.T) {
+		pg := setupPGMode(t)
+		w := pg.post(t, "/api/v1/config/energy", `{"scenario":"high"}`)
+		assertStatus(t, w, http.StatusOK)
+	})
+
+	// The Settings table must list the caller's actual Usage-range models
+	// (seeded here on live pricing, like a catalog refresh would), not
+	// always the two hardcoded representative classes.
+	t.Run("uses range models over representative classes when resolvable", func(t *testing.T) {
+		te.db.SetEffectivePricing(map[string]export.ModelRates{
+			"range-test-model": {
+				InputPerMTok: money.MustParseDollars("1"), OutputPerMTok: money.MustParseDollars("2"),
+			},
+		})
+		w := te.get(t, "/api/v1/config/energy?model=range-test-model&model=unpriced-model")
+		assertStatus(t, w, http.StatusOK)
+		var resp energyResp
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		require.Len(t, resp.Models, 1)
+		assert.Equal(t, "range-test-model", resp.Models[0].Model)
 	})
 }
 

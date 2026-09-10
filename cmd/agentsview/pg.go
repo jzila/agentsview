@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/postgres"
 	"go.kenn.io/agentsview/internal/server"
 	syncpkg "go.kenn.io/agentsview/internal/sync"
@@ -516,6 +517,9 @@ func preparePGServeImpl(appCfg config.Config, basePath string) (pgServeStartup, 
 
 	if len(appCfg.CustomModelPricing) > 0 {
 		store.SetCustomPricing(appCfg.CustomModelPricing)
+	}
+	if appCfg.Energy.Scenario != "" || len(appCfg.Energy.Overrides) > 0 {
+		store.SetEnergyConfig(energy.Scenario(appCfg.Energy.Scenario), appCfg.Energy.Overrides)
 	}
 
 	ctx, stop := signal.NotifyContext(

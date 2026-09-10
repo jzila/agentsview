@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -502,6 +503,41 @@ func (c InsightsConfig) APIKey() string {
 	return os.Getenv(strings.TrimSpace(c.APIKeyEnv))
 }
 
+// EnergyConfig configures the estimated-energy dimension on the Usage
+// surfaces (see internal/energy and docs/internal/energy-model.md).
+// Scenario selects which point on the fitted low/mid/high band the app
+// reports; empty behaves as "mid". Overrides maps a priced-model pattern
+// (the same identity the pricing catalog matches on) to a Wh-per-million-
+// output-token figure that replaces the fitted value for that model.
+type EnergyConfig struct {
+	Scenario  string             `json:"scenario,omitempty" toml:"scenario"`
+	Overrides map[string]float64 `json:"overrides,omitempty" toml:"overrides"`
+}
+
+// Validate rejects an unrecognized scenario and a negative override, the
+// same shape of check decodeCustomModelPricing applies to cost rates.
+func (c EnergyConfig) Validate() error {
+	switch c.Scenario {
+	case "", "low", "mid", "high":
+	default:
+		return fmt.Errorf(
+			"energy.scenario must be low, mid, or high, got %q", c.Scenario)
+	}
+	for model, whPerMTok := range c.Overrides {
+		if math.IsNaN(whPerMTok) || math.IsInf(whPerMTok, 0) {
+			return fmt.Errorf(
+				"energy.overrides.%s: Wh/MTok must be a finite number, got %v",
+				model, whPerMTok)
+		}
+		if whPerMTok < 0 {
+			return fmt.Errorf(
+				"energy.overrides.%s: Wh/MTok must not be negative, got %v",
+				model, whPerMTok)
+		}
+	}
+	return nil
+}
+
 // Validate checks endpoint intent and transport safety.
 func (c InsightsConfig) Validate() error {
 	endpoint := strings.TrimSpace(c.Endpoint)
@@ -780,6 +816,8 @@ type Config struct {
 	DaemonIdleTimeout time.Duration `json:"daemon_idle_timeout,omitzero" toml:"daemon_idle_timeout"`
 
 	CustomModelPricing map[string]CustomModelRate `json:"custom_model_pricing,omitempty" toml:"custom_model_pricing"`
+
+	Energy EnergyConfig `json:"energy,omitempty" toml:"energy"`
 
 	// RemoteHosts is the config-file list of remote targets that
 	// `agentsview sync` (with no --host) syncs after the local
@@ -1499,6 +1537,7 @@ func (c *Config) applyConfigTOML(data string) error {
 		DaemonIdleTimeout              time.Duration          `toml:"daemon_idle_timeout"`
 		RemoteHosts                    []RemoteHost           `toml:"remote_hosts"`
 		SessionSources                 []sessionSourceConfig  `toml:"session_sources"`
+		Energy                         EnergyConfig           `toml:"energy"`
 	}
 	meta, err := toml.Decode(data, &file)
 	if err != nil {
@@ -1710,6 +1749,9 @@ func (c *Config) applyConfigTOML(data string) error {
 		c.Insights.Endpoint = strings.TrimSpace(c.Insights.Endpoint)
 		c.Insights.Model = strings.TrimSpace(c.Insights.Model)
 		c.Insights.APIKeyEnv = strings.TrimSpace(c.Insights.APIKeyEnv)
+	}
+	if meta.IsDefined("energy") {
+		c.Energy = file.Energy
 	}
 	// IsDefined distinguishes "unset" (leave default 10s) from an
 	// explicit "0s" (disable coalescing). Checking != 0 would silently
@@ -2277,6 +2319,9 @@ func finalize(cfg *Config) error {
 		return err
 	}
 	if err := cfg.Insights.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.Energy.Validate(); err != nil {
 		return err
 	}
 	return nil
@@ -3274,6 +3319,53 @@ func (c *Config) SaveTerminalConfig(tc TerminalConfig) error {
 			return err
 		}
 		c.Terminal = live
+		return nil
+	})
+}
+
+// SaveEnergyConfig persists the [energy] scenario to the config file,
+// preserving any per-model overrides already on disk (unlike SaveSettings'
+// whole-table patch style, this reads the on-disk [energy] table back into
+// the write so a scenario-only change from Settings can never drop
+// overrides -- including ones added or edited directly in config.toml
+// since this process last loaded it, which the in-memory c.Energy.Overrides
+// would not reflect). Mirrors SaveTerminalConfig.
+func (c *Config) SaveEnergyConfig(scenario string) error {
+	if err := (EnergyConfig{Scenario: scenario}).Validate(); err != nil {
+		return err
+	}
+	return c.withConfigLock(func() error {
+		existing, err := c.readConfigMap()
+		if err != nil {
+			return fmt.Errorf("reading config file: %w", err)
+		}
+		var onDisk EnergyConfig
+		if raw, ok := existing["energy"]; ok {
+			var buf bytes.Buffer
+			if err := toml.NewEncoder(&buf).Encode(raw); err != nil {
+				return fmt.Errorf("re-encoding existing energy config: %w", err)
+			}
+			if _, err := toml.Decode(buf.String(), &onDisk); err != nil {
+				return fmt.Errorf("decoding existing energy config: %w", err)
+			}
+		}
+		merged := EnergyConfig{Scenario: scenario, Overrides: onDisk.Overrides}
+		// The scenario alone was already validated above; re-validate the
+		// combined config now that the on-disk overrides are known, since
+		// those can carry a value startup would have rejected (for example
+		// a negative or non-finite override added by hand-editing
+		// config.toml while the server runs). Without this, a scenario-only
+		// Settings change would silently persist and activate an override
+		// that was never actually valid.
+		if err := merged.Validate(); err != nil {
+			return err
+		}
+		existing["energy"] = merged
+		if err := c.writeConfigMap(existing); err != nil {
+			return err
+		}
+		c.Energy.Scenario = scenario
+		c.Energy.Overrides = onDisk.Overrides
 		return nil
 	})
 }

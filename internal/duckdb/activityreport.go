@@ -156,6 +156,13 @@ func (s *Store) GetSessionUsageRows(
 	if err != nil {
 		return nil, fmt.Errorf("loading duckdb pricing: %w", err)
 	}
+	// Built once for the whole call (see Store.energyEstimator) rather
+	// than per row, so a concurrent SetEnergyConfig can't split this
+	// result across two scenarios.
+	energyEstimator, err := s.energyEstimator()
+	if err != nil {
+		return nil, err
+	}
 	sessionOrder := make(map[string]int, len(ids))
 	for i, id := range ids {
 		sessionOrder[id] = i
@@ -337,6 +344,19 @@ func (s *Store) GetSessionUsageRows(
 		if priceErr != nil {
 			return nil, priceErr
 		}
+		// Rebanded when request-scoped exactly like duckActivityUsageCost
+		// bands cost above, via the same requestScoped test
+		// duckActivityReportRowStatus passes to
+		// duckUsageAggregateResolvedCost, so a row whose tokens cross a
+		// pricing band's threshold cannot price its cost and its energy
+		// off two different rates.
+		requestScoped := db.UsageSourceIsRequestScoped(r.source) ||
+			duckActivityUsageHasOrdinal(r.messageOrdinal)
+		energyMicroWh, energyStatus := duckEstimateEnergy(
+			energyEstimator, r.model, duckUsageLookupModel(r.model, r.pricingTS), r.pricingTS,
+			r.inputTok, r.outputTok, r.reasoningTok, r.cacheCr, r.cacheRd,
+			requestScoped, rateResolver,
+		)
 		out = append(out, activity.UsageRow{
 			SessionID:       attributionSessionID,
 			SourceSessionID: r.sessionID,
@@ -345,6 +365,8 @@ func (s *Store) GetSessionUsageRows(
 			OutputTokens:    r.outputTok,
 			Cost:            cost,
 			CostSource:      costSource,
+			EnergyMicroWh:   energyMicroWh,
+			EnergyStatus:    energyStatus,
 			SessionCost:     sessionCost,
 			Priced:          priced,
 			Contributes:     contributes,

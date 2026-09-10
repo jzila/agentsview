@@ -25,6 +25,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 )
@@ -313,6 +314,16 @@ func testDB(tb testing.TB) *DB {
 	require.NoError(tb, err, "opening test db")
 	tb.Cleanup(func() { require.NoError(tb, d.Close()) })
 	return d
+}
+
+// testEnergyEstimator returns the default (mid-scenario, no overrides)
+// energy estimator, for tests that call internal energy-computing helpers
+// (such as dailyUsageAmounts) directly without a full *DB.
+func testEnergyEstimator(tb testing.TB) *energy.Estimator {
+	tb.Helper()
+	estimator, err := (&DB{}).energyEstimator()
+	require.NoError(tb, err)
+	return estimator
 }
 
 // routeBenchmarkLogs sends the package's global log output through the

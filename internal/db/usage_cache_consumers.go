@@ -134,8 +134,15 @@ func (db *DB) queryUsageRollups(
 func (db *DB) GetTopSessionsByCost(
 	ctx context.Context, filter UsageFilter, limit int,
 ) ([]TopSessionEntry, error) {
-	snapshot, facts, _, err := db.queryUsageRollups(
+	snapshot, facts, resolver, err := db.queryUsageRollups(
 		ctx, filter, usageQueryKindToken, false)
+	if err != nil {
+		return nil, err
+	}
+	// Built once for the whole request (see estimateEnergyWith) rather than
+	// per group, so a concurrent SetEnergyConfig can't split this result
+	// across two scenarios.
+	estimator, err := db.energyEstimator()
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +150,8 @@ func (db *DB) GetTopSessionsByCost(
 		input, output, cacheWrite, cacheRead int
 		cost                                 money.Money
 		authoritative                        *money.Money
+		energyMicroWh                        int64
+		energyStatus                         string
 	}
 	bySession := make(map[string]*totals)
 	for _, group := range facts.Groups {
@@ -163,6 +172,9 @@ func (db *DB) GetTopSessionsByCost(
 		if err != nil {
 			return nil, fmt.Errorf("summing top-session cost: %w", err)
 		}
+		groupEnergyMicroWh, groupEnergyStatus := groupEnergyEstimate(estimator, resolver, group)
+		current.energyMicroWh += groupEnergyMicroWh
+		current.energyStatus = combineEnergyStatus(current.energyStatus, groupEnergyStatus)
 		if filter.Model == "" && filter.ExcludeModel == "" &&
 			group.AuthoritativeCostMicrodollars != nil {
 			value := money.Money{Microdollars: *group.AuthoritativeCostMicrodollars}
@@ -186,6 +198,8 @@ func (db *DB) GetTopSessionsByCost(
 			CacheReadTokens:     value.cacheRead,
 			TotalTokens:         value.input + value.output + value.cacheWrite + value.cacheRead,
 			Cost:                cost,
+			EnergyMicroWh:       value.energyMicroWh,
+			EnergyStatus:        value.energyStatus,
 		}
 		if session, ok := metadata[sessionID]; ok {
 			entry.DisplayName = session.DisplayName

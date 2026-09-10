@@ -52,7 +52,11 @@ type VersionInfo struct {
 // Bump it when a client-visible contract cannot be decoded safely by an older
 // CLI or daemon.
 const (
-	APIVersion = 8
+	APIVersion = 9
+	// EnergyUsageAPIVersion is the first daemon API whose usage responses
+	// carry energy_micro_wh and energy_status; an older daemon decodes them
+	// as zero, so the CLI must not read energy from anything earlier.
+	EnergyUsageAPIVersion = 9
 	// ScopedWatchPushAPIVersion is the first daemon API that accepts bounded
 	// watcher batches and their authoritative recovery scope on push requests.
 	ScopedWatchPushAPIVersion = 7

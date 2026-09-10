@@ -25,6 +25,8 @@ type ProjectTotal struct {
 	CacheCreationTokens int         `json:"cacheCreationTokens"`
 	CacheReadTokens     int         `json:"cacheReadTokens"`
 	Cost                money.Money `json:"cost"`
+	EnergyMicroWh       int64       `json:"energyMicroWh"`
+	EnergyStatus        string      `json:"energyStatus"`
 }
 
 // ModelTotal holds range-wide token and cost totals per model.
@@ -35,6 +37,8 @@ type ModelTotal struct {
 	CacheCreationTokens int         `json:"cacheCreationTokens"`
 	CacheReadTokens     int         `json:"cacheReadTokens"`
 	Cost                money.Money `json:"cost"`
+	EnergyMicroWh       int64       `json:"energyMicroWh"`
+	EnergyStatus        string      `json:"energyStatus"`
 }
 
 // AgentTotal holds range-wide token and cost totals per agent.
@@ -45,6 +49,8 @@ type AgentTotal struct {
 	CacheCreationTokens int         `json:"cacheCreationTokens"`
 	CacheReadTokens     int         `json:"cacheReadTokens"`
 	Cost                money.Money `json:"cost"`
+	EnergyMicroWh       int64       `json:"energyMicroWh"`
+	EnergyStatus        string      `json:"energyStatus"`
 }
 
 // CacheStats summarizes cache hit/miss for the period.
@@ -121,6 +127,8 @@ func projectTotalsFromService(in []service.ProjectTotal) []ProjectTotal {
 			CacheCreationTokens: total.CacheCreationTokens,
 			CacheReadTokens:     total.CacheReadTokens,
 			Cost:                total.Cost,
+			EnergyMicroWh:       total.EnergyMicroWh,
+			EnergyStatus:        total.EnergyStatus,
 		})
 	}
 	return out
@@ -136,6 +144,8 @@ func modelTotalsFromService(in []service.ModelTotal) []ModelTotal {
 			CacheCreationTokens: total.CacheCreationTokens,
 			CacheReadTokens:     total.CacheReadTokens,
 			Cost:                total.Cost,
+			EnergyMicroWh:       total.EnergyMicroWh,
+			EnergyStatus:        total.EnergyStatus,
 		})
 	}
 	return out
@@ -151,6 +161,8 @@ func agentTotalsFromService(in []service.AgentTotal) []AgentTotal {
 			CacheCreationTokens: total.CacheCreationTokens,
 			CacheReadTokens:     total.CacheReadTokens,
 			Cost:                total.Cost,
+			EnergyMicroWh:       total.EnergyMicroWh,
+			EnergyStatus:        total.EnergyStatus,
 		})
 	}
 	return out

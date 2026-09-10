@@ -14,6 +14,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 )
 
 // Store wraps a PostgreSQL connection for read-only session
@@ -30,6 +31,14 @@ type Store struct {
 	pricingLoadMu sync.Mutex
 	pricingLoad   *pricingLoad
 	customPricing map[string]config.CustomModelRate
+
+	// energyMu guards the config.toml-derived scenario and per-model E_out
+	// overrides the estimated-energy dimension uses (see internal/energy
+	// and SetEnergyConfig). Left zero, the estimator uses the fit's mid
+	// scenario with no overrides.
+	energyMu        sync.RWMutex
+	energyScenario  energy.Scenario
+	energyOverrides map[string]float64
 
 	// vectorMu guards the semantic-search seam. vectorSearcher is the PG
 	// vector searcher wired at pg serve startup when a generation matches

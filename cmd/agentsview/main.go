@@ -1345,6 +1345,7 @@ func openDB(cfg config.Config) (*db.DB, error) {
 		return nil, fmt.Errorf("configuring artifact local machine: %w", err)
 	}
 	applyCustomPricing(database, cfg)
+	applyEnergyConfig(database, cfg)
 	return database, nil
 }
 
@@ -1355,6 +1356,7 @@ func openReadOnlyDB(cfg config.Config) (*db.DB, error) {
 		return nil, schemaUpgradeHint(err)
 	}
 	applyCustomPricing(database, cfg)
+	applyEnergyConfig(database, cfg)
 	if err := applyCursorSecret(database, cfg); err != nil {
 		database.Close()
 		return nil, err

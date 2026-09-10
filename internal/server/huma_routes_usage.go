@@ -61,12 +61,18 @@ type UsageFilterInput struct {
 	NoDefaultRange    bool   `query:"no_default_range" doc:"Preserve omitted from/to without applying default range"`
 	Breakdowns        bool   `query:"breakdowns" default:"true" doc:"Include per-model, per-project, and per-agent breakdowns"`
 	SessionCounts     bool   `query:"session_counts" default:"true" doc:"Include distinct session counts"`
+	// Energy defaults true (the Usage page always needs energy_micro_wh
+	// available, since it toggles cost/token/energy display client-side
+	// without a new request); a caller that only reads cost or tokens,
+	// like `usage statusline` without --energy, sets this false to skip
+	// building the estimator and computing energy for every row.
+	Energy bool `query:"energy" default:"true" doc:"Compute energy_micro_wh/energy_status"`
 }
 
 type usageTopSessionsInput struct {
 	UsageFilterInput
 	Limit      int    `query:"limit" minimum:"0" maximum:"100" default:"20" doc:"Maximum number of sessions"`
-	Sort       string `query:"sort" enum:"cost,tokens" default:"cost" doc:"Rank sessions by cost or selected token types"`
+	Sort       string `query:"sort" enum:"cost,tokens,energy" default:"cost" doc:"Rank sessions by cost, selected token types, or estimated energy"`
 	TokenTypes string `query:"token_types" doc:"Comma-separated token counters for token ranking: input, cache_write, cache_read, output"`
 }
 
@@ -107,6 +113,7 @@ func usageRequestFromInput(in UsageFilterInput) service.UsageRequest {
 		NoDefaultRange:    in.NoDefaultRange,
 		Breakdowns:        &in.Breakdowns,
 		SessionCounts:     &in.SessionCounts,
+		Energy:            &in.Energy,
 	}
 }
 
@@ -297,8 +304,10 @@ func (s *Server) humaUsageTopSessions(
 		f.TopSessionsSort = db.TopSessionsSortCost
 	case db.TopSessionsSortTokens:
 		f.TopSessionsSort = db.TopSessionsSortTokens
+	case db.TopSessionsSortEnergy:
+		f.TopSessionsSort = db.TopSessionsSortEnergy
 	default:
-		return nil, huma.Error400BadRequest("sort must be cost or tokens")
+		return nil, huma.Error400BadRequest("sort must be cost, tokens, or energy")
 	}
 	f.TopSessionsTokenTypes, err = db.ParseUsageTokenTypes(in.TokenTypes)
 	if err != nil {

@@ -5,8 +5,8 @@
     "table_version": "2026-07-03T12:00:00Z",
     "latest_row_updated_at": "2026-07-03T12:00:00Z",
     "custom_override_count": 0,
-    "effective_row_count": 2646,
-    "digest": "sha256:af577891e94196df3507c7ef627fcd60c3618d6808b960819d0967921f741533",
+    "effective_row_count": 2647,
+    "digest": "sha256:ec68d236bda7a372d5662a92e011a6a9e2b87c5797012986a798a5246089a0c0",
     "cost_source": "mixed",
     "fallback": {
       "used": false,
@@ -78,6 +78,16 @@
     }
   },
   "projects": {
+    "pl1:sha256:a998e358fa5132eaf9ac2cb16ee752c99400d52800c8e5c43eb8905909a05106": {
+      "display_label": "path-project",
+      "resolution": "resolved",
+      "identity": {
+        "key": "p1:sha256:1e23584a9752e07e023270241de74c8b1c4fc7a0e37ec6ea8d20aa6633c4e42b",
+        "kind": "machine_root",
+        "root_key": "r1:sha256:405f2a95d1b7adce695b5c173059e33aba2e6ec8ed135575f53505e5619e3ef7",
+        "repository_key": "repo1:sha256:2bef70455df841d4b0f6418478f5911e758fe795817e67670d8fb6995938debe"
+      }
+    },
     "pl1:sha256:333e5f19bc8ed34f56fa89e51a9307bbc972d173498993ed02e564d32162196f": {
       "display_label": "remote-project",
       "resolution": "resolved",
@@ -91,16 +101,6 @@
     "pl1:sha256:ba5a8fb68c3e3f1454c428f19fdfd2dff9b2c40ae6dc2fef3a19a7c761bd72a1": {
       "display_label": "unknown-project",
       "resolution": "unknown"
-    },
-    "pl1:sha256:a998e358fa5132eaf9ac2cb16ee752c99400d52800c8e5c43eb8905909a05106": {
-      "display_label": "path-project",
-      "resolution": "resolved",
-      "identity": {
-        "key": "p1:sha256:1e23584a9752e07e023270241de74c8b1c4fc7a0e37ec6ea8d20aa6633c4e42b",
-        "kind": "machine_root",
-        "root_key": "r1:sha256:405f2a95d1b7adce695b5c173059e33aba2e6ec8ed135575f53505e5619e3ef7",
-        "repository_key": "repo1:sha256:2bef70455df841d4b0f6418478f5911e758fe795817e67670d8fb6995938debe"
-      }
     }
   },
   "daily": [
@@ -113,6 +113,8 @@
       "totalCost": {
         "microdollars": 4200
       },
+      "energyMicroWh": 85762,
+      "energyStatus": "ok",
       "modelsUsed": [
         "fixture-model-reported"
       ],
@@ -125,7 +127,9 @@
           "cacheReadTokens": 0,
           "cost": {
             "microdollars": 4200
-          }
+          },
+          "energyMicroWh": 85762,
+          "energyStatus": "ok"
         }
       ],
       "projectBreakdowns": [],
@@ -141,6 +145,8 @@
       "totalCost": {
         "microdollars": 2880
       },
+      "energyMicroWh": 265746,
+      "energyStatus": "ok",
       "modelsUsed": [
         "fixture-model-computed"
       ],
@@ -153,7 +159,9 @@
           "cacheReadTokens": 0,
           "cost": {
             "microdollars": 2880
-          }
+          },
+          "energyMicroWh": 265746,
+          "energyStatus": "ok"
         }
       ],
       "projectBreakdowns": [],
@@ -169,6 +177,8 @@
       "totalCost": {
         "microdollars": 17260
       },
+      "energyMicroWh": 524981,
+      "energyStatus": "ok",
       "modelsUsed": [
         "fixture-model-reported",
         "fixture-model-computed"
@@ -182,7 +192,9 @@
           "cacheReadTokens": 0,
           "cost": {
             "microdollars": 12500
-          }
+          },
+          "energyMicroWh": 85762,
+          "energyStatus": "ok"
         },
         {
           "modelName": "fixture-model-computed",
@@ -192,7 +204,9 @@
           "cacheReadTokens": 400,
           "cost": {
             "microdollars": 4760
-          }
+          },
+          "energyMicroWh": 439219,
+          "energyStatus": "ok"
         }
       ],
       "projectBreakdowns": [],
@@ -208,6 +222,8 @@
     "totalCost": {
       "microdollars": 24340
     },
+    "energyMicroWh": 876489,
+    "energyStatus": "ok",
     "cacheSavings": {
       "microdollars": 520
     }
@@ -215,9 +231,9 @@
   "sessionCounts": {
     "total": 4,
     "byProject": {
+      "pl1:sha256:a998e358fa5132eaf9ac2cb16ee752c99400d52800c8e5c43eb8905909a05106": 1,
       "pl1:sha256:ba5a8fb68c3e3f1454c428f19fdfd2dff9b2c40ae6dc2fef3a19a7c761bd72a1": 1,
-      "pl1:sha256:333e5f19bc8ed34f56fa89e51a9307bbc972d173498993ed02e564d32162196f": 2,
-      "pl1:sha256:a998e358fa5132eaf9ac2cb16ee752c99400d52800c8e5c43eb8905909a05106": 1
+      "pl1:sha256:333e5f19bc8ed34f56fa89e51a9307bbc972d173498993ed02e564d32162196f": 2
     },
     "byAgent": {
       "cursor": 1,

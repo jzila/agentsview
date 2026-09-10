@@ -85,6 +85,10 @@ export type GetApiV1UsagePairwiseComparisonParams = {
    */
   session_counts?: boolean;
   /**
+   * Compute energy_micro_wh/energy_status
+   */
+  energy?: boolean;
+  /**
    * Left-side comparison dimension
    */
   left_dimension: string;

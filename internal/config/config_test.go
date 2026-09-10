@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -817,6 +818,41 @@ func TestSaveGithubToken_RejectsCorruptConfig(t *testing.T) {
 
 	err := cfg.SaveGithubToken("tok")
 	require.Error(t, err, "expected error for corrupt config")
+}
+
+// TestEnergyConfigValidate_RejectsBadOverrideValues: an override's Wh/MTok must be a finite, non-negative number.
+func TestEnergyConfigValidate_RejectsBadOverrideValues(t *testing.T) {
+	for _, tc := range []struct {
+		name, wantErr string
+		value         float64
+	}{
+		{"non-finite", "must be a finite number", math.NaN()},
+		{"negative", "must not be negative", -1.0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := EnergyConfig{Scenario: "mid", Overrides: map[string]float64{"gpt-4o": tc.value}}.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// TestSaveEnergyConfig_ReReadsOutOfBandOverrides: a valid out-of-band override folds in and refreshes state; an invalid one blocks the save.
+func TestSaveEnergyConfig_ReReadsOutOfBandOverrides(t *testing.T) {
+	write := func(t *testing.T, tmp, wh string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(tmp, configFileName),
+			[]byte("[energy]\nscenario = \"low\"\n\n[energy.overrides]\n\"gpt-4o\" = "+wh+"\n"), 0o600))
+	}
+	tmp := setupTestEnv(t)
+	cfg := Config{DataDir: tmp}
+
+	write(t, tmp, "500.0")
+	require.NoError(t, cfg.SaveEnergyConfig("high"))
+	assert.Equal(t, map[string]float64{"gpt-4o": 500.0}, cfg.Energy.Overrides)
+
+	write(t, tmp, "-1.0")
+	require.Error(t, cfg.SaveEnergyConfig("high"))
 }
 
 func TestSaveGithubToken_ReturnsErrorOnReadFailure(t *testing.T) {

@@ -156,6 +156,13 @@ func (s *Store) GetSessionUsageRows(
 		return nil, fmt.Errorf("loading pg pricing: %w", err)
 	}
 	rateResolver := export.NewPricingResolver(pricing)
+	// Built once for the whole call (see estimateEnergyWith's SQLite
+	// counterpart) rather than per row, so a concurrent SetEnergyConfig
+	// can't split this result across two scenarios.
+	energyEstimator, err := s.energyEstimator()
+	if err != nil {
+		return nil, err
+	}
 	sessionOrder := make(map[string]int, len(ids))
 	for i, id := range ids {
 		sessionOrder[id] = i
@@ -307,6 +314,7 @@ func (s *Store) GetSessionUsageRows(
 		if costRow.cost.Valid {
 			costSource = export.CostSourceReported
 		}
+		energyMicroWh, energyStatus := pgSessionRowEnergy(r, energyEstimator, rateResolver)
 		out = append(out, activity.UsageRow{
 			SessionID:       attributionSessionID,
 			SourceSessionID: r.sessionID,
@@ -320,6 +328,8 @@ func (s *Store) GetSessionUsageRows(
 			Contributes:     contributes,
 			Agent:           r.agent,
 			ProviderID:      r.providerID,
+			EnergyMicroWh:   energyMicroWh,
+			EnergyStatus:    energyStatus,
 			ClaudeMessageID: r.claudeMessageID,
 			ClaudeRequestID: r.claudeRequestID,
 			SourceUUID:      r.sourceUUID,

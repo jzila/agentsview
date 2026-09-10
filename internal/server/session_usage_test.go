@@ -63,6 +63,8 @@ func TestHandleSessionUsage_PricedSession(t *testing.T) {
 		"has_cost":            true,
 		"cost_usd":            0.01134,
 		"cost_source":         "computed",
+		"energy_micro_wh":     float64(639468),
+		"energy_status":       "ok",
 		"models":              []any{controlledSessionUsageModel},
 		"unpriced_models":     []any{},
 		"breakdown_count":     float64(1),
@@ -92,7 +94,9 @@ func TestHandleSessionUsage_PricedSession(t *testing.T) {
 			"cost": map[string]any{
 				"microdollars": float64(11340),
 			},
-			"has_cost": true,
+			"has_cost":        true,
+			"energy_micro_wh": float64(639468),
+			"energy_status":   "ok",
 		},
 	}, got["breakdown"], "breakdown rows with ?breakdown=true")
 }
@@ -363,6 +367,7 @@ func TestHandleSessionUsage_NoTokenOrCostData(t *testing.T) {
 		"has_token_data":      false,
 		"cost":                map[string]any{"microdollars": float64(0)},
 		"has_cost":            false,
+		"energy_micro_wh":     float64(0),
 		"models":              []any{},
 		"unpriced_models":     []any{},
 		"breakdown_count":     float64(0),

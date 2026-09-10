@@ -84,4 +84,8 @@ export type GetApiV1UsageSummaryParams = {
    * Include distinct session counts
    */
   session_counts?: boolean;
+  /**
+   * Compute energy_micro_wh/energy_status
+   */
+  energy?: boolean;
 };

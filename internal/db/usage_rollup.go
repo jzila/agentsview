@@ -677,11 +677,12 @@ func installUsageRollupRows(
 			band = *row.BandThreshold
 		}
 		_, err := conn.ExecContext(ctx, `INSERT INTO usage_daily_rollups VALUES(
-			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			installID, row.LocalDate, row.ReportedModel, row.ProviderID,
 			row.PricedModel, row.MatchedPattern, boolInt(row.RateOK), row.RateHash,
 			row.PricingTimestamp, band,
 			row.InputTokens, row.OutputTokens, row.ReasoningTokens,
+			row.EnergyBillableOutputTokens,
 			row.CacheCreationTokens, row.CacheReadTokens, row.WebSearchRequests,
 			row.CostMicrodollars, row.SavingsMicrodollars,
 			row.AuthoritativeCostMicrodollars, row.ComputedRequestCount,

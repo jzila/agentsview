@@ -85,6 +85,10 @@ export type GetApiV1UsageComparisonParams = {
    */
   session_counts?: boolean;
   /**
+   * Compute energy_micro_wh/energy_status
+   */
+  energy?: boolean;
+  /**
    * Current period total cost in microdollars
    * @minimum 0
    */

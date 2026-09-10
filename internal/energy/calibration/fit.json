@@ -1,0 +1,73 @@
+{
+  "points_hash": "sha256:3f7fc380e03793b1abf0b6dcd3b81c6d84eb6ca401f64ee908b0739781989b63",
+  "generated_at": "2026-09-10T19:36:28Z",
+  "pooled": {
+    "a": 470.49352818801265,
+    "b": 0.21660187924582883,
+    "residual_sd": 0.8532488772595721,
+    "n": 10
+  },
+  "families": {},
+  "residuals": [
+    {
+      "id": "gpt4o-epoch-2025",
+      "log_residual": -0.2555968068010568,
+      "fitted_wh_per_mtok": 774.7392042046237,
+      "actual_wh_per_mtok": 600
+    },
+    {
+      "id": "gemini-apps-median-2025",
+      "log_residual": -0.17846639430880273,
+      "fitted_wh_per_mtok": 573.7837012493889,
+      "actual_wh_per_mtok": 479.99999999999994
+    },
+    {
+      "id": "joule-frontier-median-2026",
+      "log_residual": -0.6377923717884757,
+      "fitted_wh_per_mtok": 845.8575513432947,
+      "actual_wh_per_mtok": 447
+    },
+    {
+      "id": "claude-sonnet-gist-2026",
+      "log_residual": 0.8352336851557478,
+      "fitted_wh_per_mtok": 845.8575513432947,
+      "actual_wh_per_mtok": 1950
+    },
+    {
+      "id": "claude-sonnet-carbon",
+      "log_residual": -0.9312179761380177,
+      "fitted_wh_per_mtok": 845.8575513432947,
+      "actual_wh_per_mtok": 333.33
+    },
+    {
+      "id": "claude-sonnet-hha-short",
+      "log_residual": 1.1277119298710216,
+      "fitted_wh_per_mtok": 845.8575513432947,
+      "actual_wh_per_mtok": 2612.5
+    },
+    {
+      "id": "claude-sonnet-hha-medium",
+      "log_residual": 1.0078933310379652,
+      "fitted_wh_per_mtok": 845.8575513432947,
+      "actual_wh_per_mtok": 2317.5
+    },
+    {
+      "id": "claude-sonnet-hha-long",
+      "log_residual": 0.6226568198798184,
+      "fitted_wh_per_mtok": 845.8575513432947,
+      "actual_wh_per_mtok": 1576.5714285714284
+    },
+    {
+      "id": "llama3-70b-tokenpowerbench",
+      "log_residual": -1.4175421793729095,
+      "fitted_wh_per_mtok": 447.0740779339274,
+      "actual_wh_per_mtok": 108.33
+    },
+    {
+      "id": "gpt-oss-120b-energyscore",
+      "log_residual": 4.676435418754273,
+      "fitted_wh_per_mtok": 395.7663200364033,
+      "actual_wh_per_mtok": 42500
+    }
+  ]
+}

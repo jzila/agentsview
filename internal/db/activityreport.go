@@ -168,6 +168,13 @@ func (db *DB) GetSessionUsageRows(
 		return nil, fmt.Errorf("loading pricing: %w", err)
 	}
 	rateResolver := export.NewPricingResolver(pricing)
+	// Built once for the whole call (see estimateEnergyWith) rather than
+	// per row, so a concurrent SetEnergyConfig can't split this result
+	// across two scenarios.
+	energyEstimator, err := db.energyEstimator()
+	if err != nil {
+		return nil, err
+	}
 	sessionOrder := make(map[string]int, len(ids))
 	for i, id := range ids {
 		if err := ctx.Err(); err != nil {
@@ -318,6 +325,7 @@ func (db *DB) GetSessionUsageRows(
 		if costRow.cost.Valid {
 			costSource = export.CostSourceReported
 		}
+		energyMicroWh, energyStatus := sessionRowEnergy(energyEstimator, r, rateResolver)
 		out = append(out, activity.UsageRow{
 			SessionID:       attributionSessionID,
 			SourceSessionID: r.sessionID,
@@ -335,6 +343,8 @@ func (db *DB) GetSessionUsageRows(
 			ClaudeRequestID: r.claudeRequestID,
 			SourceUUID:      r.sourceUUID,
 			UsageDedupKey:   r.usageDedupKey,
+			EnergyMicroWh:   energyMicroWh,
+			EnergyStatus:    energyStatus,
 
 			UsageSource:         r.usageSource,
 			MessageOrdinal:      usageRowMessageOrdinal(r.messageOrdinal),

@@ -188,6 +188,7 @@ func TestSessionUsageJSONSchemaIncludesCostContract(t *testing.T) {
 		},
 		"has_cost":        true,
 		"cost_usd":        0.42,
+		"energy_micro_wh": float64(0),
 		"models":          []any{"gpt-5.1"},
 		"unpriced_models": []any{"local-model"},
 		"server_running":  true,

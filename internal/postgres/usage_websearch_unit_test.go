@@ -121,11 +121,11 @@ func TestPGSessionRowCostBillsWebSearchOnUnpricedModel(t *testing.T) {
 
 func TestPGDailyUsageAmountsBillWebSearchRequests(t *testing.T) {
 	resolver := webSearchResolver()
-	_, _, _, _, cost, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
+	_, _, _, _, cost, _, _, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
 		usageSource: "message",
 		model:       "claude-websearch-test",
 		tokenJSON:   webSearchTokenJSON("2"),
-	}, resolver)
+	}, resolver, testPGEnergyEstimator(t))
 	require.NoError(t, err)
 	assert.Equal(t, money.MustParseDollars("0.32"), cost)
 }

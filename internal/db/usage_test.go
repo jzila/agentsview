@@ -100,15 +100,20 @@ func TestDailyUsageAmountsPricingBandRequestScope(t *testing.T) {
 		},
 	}
 
+	// The tiered-rate regression: a banded row must estimate energy at the
+	// banded rate, the same rate its cost uses, not the base rate.
+	var baseEnergy, bandedEnergy int64
+	var sawBase, sawBanded bool
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resolver := pricingBandTestResolver()
-			_, _, _, _, cost, _, err := dailyUsageAmounts(dailyUsageScanRow{
+			_, _, _, _, cost, _, energyMicroWh, energyStatus, err := dailyUsageAmounts(dailyUsageScanRow{
 				messageOrdinal: tt.messageOrdinal,
 				usageSource:    tt.usageSource,
 				model:          "banded-model",
 				inputTokens:    300_000,
-			}, resolver)
+			}, resolver, testEnergyEstimator(t))
 			require.NoError(t, err)
 			block, err := resolver.BuildBlock()
 			require.NoError(t, err)
@@ -118,20 +123,59 @@ func TestDailyUsageAmountsPricingBandRequestScope(t *testing.T) {
 			assert.Equal(t, money.Money{Microdollars: tt.wantCost}, cost)
 			assert.Equal(t, tt.wantApplication,
 				provenance.Resolutions[0].Application)
+
+			assert.Equal(t, "ok", energyStatus)
+			require.Positive(t, energyMicroWh)
+			if len(tt.wantApplication.Bands) > 0 {
+				bandedEnergy, sawBanded = energyMicroWh, true
+			} else {
+				baseEnergy, sawBase = energyMicroWh, true
+			}
 		})
 	}
+
+	require.True(t, sawBase)
+	require.True(t, sawBanded)
+	assert.NotEqual(t, baseEnergy, bandedEnergy)
+}
+
+// TestSessionRowEnergyClampsMalformedReasoningTokens guards sessionRowEnergy
+// against a message row's raw reasoning_tokens (oversized or negative)
+// reaching the estimator unclamped, unlike its input/output/cache counters.
+func TestSessionRowEnergyClampsMalformedReasoningTokens(t *testing.T) {
+	resolver := export.NewPricingResolver([]export.EffectivePricingRow{{
+		ModelPattern: "gpt-5.4",
+		Rates:        export.ModelRates{OutputPerMTok: money.MustParseDollars("15")},
+	}})
+	estimator := testEnergyEstimator(t)
+	// reasoningTokens is set on both the row's raw scanned column (as
+	// dailyUsageMessageRowsSQLTemplate populates it, unclamped, straight
+	// from json_extract) and the matching token_usage JSON it was scanned
+	// from, exactly like real data: only the JSON-reparsed value is clamped.
+	energyFor := func(reasoningTokens int) int64 {
+		row := usageScanRow{
+			usageSource: "message", model: "gpt-5.4", reasoningTokens: reasoningTokens,
+			tokenJSON: fmt.Sprintf(`{"output_tokens":0,"reasoning_tokens":%d}`, reasoningTokens),
+		}
+		microWh, status := sessionRowEnergy(estimator, row, resolver)
+		require.Equal(t, "ok", status)
+		return microWh
+	}
+
+	assert.Equal(t, energyFor(MaxPlausibleTokens), energyFor(50_000_000))
+	assert.Equal(t, energyFor(0), energyFor(-500))
 }
 
 func TestDailyUsageAmountsPricingBandSavings(t *testing.T) {
 	resolver := pricingBandTestResolver()
-	_, _, _, _, cost, savings, err := dailyUsageAmounts(dailyUsageScanRow{
+	_, _, _, _, cost, savings, _, _, err := dailyUsageAmounts(dailyUsageScanRow{
 		messageOrdinal:           sql.NullInt64{Int64: 1, Valid: true},
 		usageSource:              "usage-event",
 		model:                    "banded-model",
 		inputTokens:              100_001,
 		cacheCreationInputTokens: 50_000,
 		cacheReadInputTokens:     50_000,
-	}, resolver)
+	}, resolver, testEnergyEstimator(t))
 	require.NoError(t, err)
 
 	assert.Equal(t, money.Money{Microdollars: 260_002}, cost)
@@ -166,7 +210,7 @@ func TestDailyUsageAmountsPricingBandApplicationCounts(t *testing.T) {
 	}
 	var total money.Money
 	for _, row := range rows {
-		_, _, _, _, cost, _, err := dailyUsageAmounts(row, resolver)
+		_, _, _, _, cost, _, _, _, err := dailyUsageAmounts(row, resolver, testEnergyEstimator(t))
 		require.NoError(t, err)
 		total = money.MustAdd(total, cost)
 	}
@@ -675,6 +719,44 @@ func TestGetDailyUsageWithData(t *testing.T) {
 	assert.Equal(t, 1000, result.Totals.InputTokens, "Totals.InputTokens")
 	assert.Equal(t, wantCost, result.Totals.TotalCost,
 		"Totals.TotalCost")
+}
+
+// TestGetDailyUsageSkipEnergy: UsageFilter.SkipEnergy must skip computing
+// energy_micro_wh/energy_status entirely (not just hide it), so a caller
+// like `usage statusline` without --energy does not pay to build the
+// estimator or estimate energy on every row.
+func TestGetDailyUsageSkipEnergy(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	requireNoError(t, d.UpsertModelPricing([]ModelPricing{{
+		ModelPattern: "claude-sonnet-4-20250514",
+		InputPerMTok: money.MustParseDollars("3.0"), OutputPerMTok: money.MustParseDollars("15.0"),
+	}}), "UpsertModelPricing")
+	insertSession(t, d, "sess-energy", "proj1", func(s *Session) {
+		s.Agent = "claude"
+		s.StartedAt = new("2024-06-15T10:00:00Z")
+	})
+	insertMessages(t, d, Message{
+		SessionID: "sess-energy", Ordinal: 0, Role: "assistant",
+		Timestamp: "2024-06-15T10:30:00Z", Model: "claude-sonnet-4-20250514",
+		TokenUsage: jsontext.Value(`{"input_tokens":1000,"output_tokens":500}`),
+	})
+	filter := UsageFilter{From: "2024-06-01", To: "2024-06-30"}
+
+	computed, err := d.GetDailyUsage(ctx, filter)
+	requireNoError(t, err, "GetDailyUsage with SkipEnergy false")
+	require.Positive(t, computed.Totals.EnergyMicroWh, "sanity: fixture prices to nonzero energy")
+	assert.Equal(t, "ok", computed.Totals.EnergyStatus)
+
+	filter.SkipEnergy = true
+	skipped, err := d.GetDailyUsage(ctx, filter)
+	requireNoError(t, err, "GetDailyUsage with SkipEnergy true")
+	assert.Zero(t, skipped.Totals.EnergyMicroWh, "energy must not be computed when SkipEnergy is set")
+	assert.Empty(t, skipped.Totals.EnergyStatus)
+	require.Len(t, skipped.Daily, 1)
+	assert.Zero(t, skipped.Daily[0].EnergyMicroWh)
+	assert.Empty(t, skipped.Daily[0].EnergyStatus)
 }
 
 func TestUsageRowsHandleBlankMessageTimestampWithoutSessionStart(t *testing.T) {
@@ -2697,24 +2779,24 @@ func TestGetTopSessionsByTokens(t *testing.T) {
 }
 
 func TestSortAndLimitTopSessions(t *testing.T) {
+	// Each session ranks highest on a different metric.
 	in := []TopSessionEntry{
-		{SessionID: "a", InputTokens: 10, TotalTokens: 10, Cost: money.MustParseDollars("5")},
-		{SessionID: "b", InputTokens: 100, TotalTokens: 100, Cost: money.MustParseDollars("1")},
-		{SessionID: "c", InputTokens: 50, TotalTokens: 50, Cost: money.MustParseDollars("3")},
+		{SessionID: "a", InputTokens: 10, TotalTokens: 10, Cost: money.MustParseDollars("5"), EnergyMicroWh: 200},
+		{SessionID: "b", InputTokens: 100, TotalTokens: 100, Cost: money.MustParseDollars("1"), EnergyMicroWh: 50},
+		{SessionID: "c", InputTokens: 50, TotalTokens: 50, Cost: money.MustParseDollars("3"), EnergyMicroWh: 900},
 	}
-	got := SortAndLimitTopSessions(
-		in, 2, TopSessionsSortTokens, UsageTokenTypesAll,
-	)
-	require.Len(t, got, 2)
-	assert.Equal(t, "b", got[0].SessionID)
-	assert.Equal(t, "c", got[1].SessionID)
-
-	gotCost := SortAndLimitTopSessions(
-		in, 2, TopSessionsSortCost, UsageTokenTypesAll,
-	)
-	require.Len(t, gotCost, 2)
-	assert.Equal(t, "a", gotCost[0].SessionID)
-	assert.Equal(t, "c", gotCost[1].SessionID)
+	for _, tc := range []struct {
+		sortBy string
+		want   []string
+	}{
+		{TopSessionsSortTokens, []string{"b", "c"}},
+		{TopSessionsSortCost, []string{"a", "c"}},
+		{TopSessionsSortEnergy, []string{"c", "a"}},
+	} {
+		got := SortAndLimitTopSessions(in, 2, tc.sortBy, UsageTokenTypesAll)
+		require.Len(t, got, 2, tc.sortBy)
+		assert.Equal(t, tc.want, []string{got[0].SessionID, got[1].SessionID}, tc.sortBy)
+	}
 }
 
 func TestGetTopSessionsByCost_DisplayNameFallback(t *testing.T) {
@@ -5959,12 +6041,12 @@ func TestDailyUsageAmountsPrefersExactCustomKimiAlias(t *testing.T) {
 		},
 	})
 
-	_, _, _, _, cost, _, err := dailyUsageAmounts(dailyUsageScanRow{
+	_, _, _, _, cost, _, _, _, err := dailyUsageAmounts(dailyUsageScanRow{
 		usageSource: "provider",
 		model:       "kimi-for-coding",
 		ts:          "2026-07-19T00:00:00Z",
 		inputTokens: 1_000_000,
-	}, resolver)
+	}, resolver, testEnergyEstimator(t))
 
 	require.NoError(t, err)
 	assert.Equal(t, money.MustParseDollars("7"), cost)

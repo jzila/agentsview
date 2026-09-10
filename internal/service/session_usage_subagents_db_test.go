@@ -166,6 +166,8 @@ func TestSessionUsageWithSubagentsOverSQLiteCombinesAndDedupes(t *testing.T) {
 		"the own-session path must keep reporting only the parent's rows")
 	require.Equal(t, 500, own.TotalOutputTokens)
 	require.Zero(t, own.SubagentCount)
+	require.Positive(t, own.EnergyMicroWh,
+		"the own-session path must report nonzero energy for its own priced rows")
 
 	got, err := service.SessionUsageWithSubagents(
 		ctx, d, subagentParentID, true)
@@ -178,6 +180,11 @@ func TestSessionUsageWithSubagentsOverSQLiteCombinesAndDedupes(t *testing.T) {
 	assert.Equal(t, money.MustParseDollars(subagentTotalCost), got.Cost,
 		"the shared row must be counted once, not once per transcript")
 	assert.Equal(t, 3, got.BreakdownCount)
+	// Energy must fold in the subagents' own rows the same way cost does:
+	// combining must not silently drop it to zero, and it must exceed the
+	// parent-only total since two more priced sessions contributed.
+	assert.Greater(t, got.EnergyMicroWh, own.EnergyMicroWh,
+		"combined energy must include the subagents' own contributions, not just the parent's")
 
 	// The echoed row must be deduplicated out of every figure in the
 	// document, not just cost. Summing the stored per-transcript
@@ -209,6 +216,9 @@ func TestSessionUsageWithSubagentsOverSQLiteCombinesAndDedupes(t *testing.T) {
 		got.Breakdown[2].Cost)
 	assert.Equal(t, 2000, got.Breakdown[0].InputTokens)
 	assert.Equal(t, 1000, got.Breakdown[0].OutputTokens)
+	assert.Positive(t, got.Breakdown[0].EnergyMicroWh,
+		"a subagent's own breakdown row must carry its own energy estimate")
+	assert.Equal(t, "ok", got.Breakdown[0].EnergyStatus)
 }
 
 func TestSessionUsageWithSubagentsDoesNotRestoreDedupedOnlyChildTokens(

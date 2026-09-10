@@ -37,7 +37,14 @@ const (
 	// Version 10 rebuilds rollups with Bedrock pricing for namespaced Codex
 	// models, including historical AWS rates for timestamped usage.
 	// Version 11 rebuilds Copilot store usage with request-scoped pricing.
-	usageCacheFormatVersion             = 11
+	// Version 12 adds energy_billable_output_tokens, the per-fact
+	// output-or-reasoning-fallback sum energy estimation needs (see
+	// energy.BillableOutputTokens); it must be computed before facts merge
+	// into a rollup row, not derived afterward from the merged sums. This is
+	// a disclosed exception to st48's "no new rollup columns" constraint --
+	// see docs/internal/energy-model.md's "Cache format exception" section
+	// for why the fallback cannot be computed read-time-only.
+	usageCacheFormatVersion             = 12
 	usageCacheApplicationID             = 0x41565543
 	usageCacheKind                      = "agentsview-usage-facts"
 	usageCacheRetirementProtocolVersion = 1
@@ -165,6 +172,7 @@ CREATE TABLE usage_daily_rollups (
     input_tokens INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL,
     reasoning_tokens INTEGER NOT NULL,
+    energy_billable_output_tokens INTEGER NOT NULL,
     cache_creation_tokens INTEGER NOT NULL,
     cache_read_tokens INTEGER NOT NULL,
     web_search_requests INTEGER NOT NULL,

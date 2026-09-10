@@ -4,6 +4,7 @@ package duckdb
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 	pricingpkg "go.kenn.io/agentsview/internal/pricing"
@@ -1995,4 +1997,87 @@ func TestDuckAnalyticsToolsWindowsMessagesInSQL(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, skills.TotalSkillCalls)
 	t.Log("production tool query carried the message window predicate; SQL admitted 3 calls; tools and skills retain UTC+14 boundary and null fallback")
+}
+
+var energyParityPricing = []db.ModelPricing{{
+	ModelPattern: "claude-energy-parity-test",
+	InputPerMTok: money.MustParseDollars("3.0"), OutputPerMTok: money.MustParseDollars("15.0"),
+}}
+
+func energyParityStores(t *testing.T) (*db.DB, *Store) {
+	t.Helper()
+	ctx := context.Background()
+	local := newLocalDB(t)
+	require.NoError(t, local.UpsertModelPricing(energyParityPricing))
+	writes := []db.SessionBatchWrite{{
+		Session: db.Session{ID: "duck-energy", Project: "duck-energy", Machine: "local", Agent: "claude", StartedAt: new("2026-08-01T10:00:00Z"), EndedAt: new("2026-08-01T10:05:00Z"), MessageCount: 1},
+		Messages: []db.Message{{
+			SessionID: "duck-energy", Ordinal: 0, Role: "assistant", Content: "work", Timestamp: "2026-08-01T10:01:00Z",
+			Model: "claude-energy-parity-test", TokenUsage: jsontext.Value(`{"input_tokens":100000,"output_tokens":50000}`),
+			OutputTokens: 50000, HasOutputTokens: true, ClaudeMessageID: "m-energy", ClaudeRequestID: "r-energy",
+		}},
+		DataVersion: 1, ReplaceMessages: true,
+	}}
+	_, err := local.WriteSessionBatchAtomic(writes)
+	require.NoError(t, err)
+	syncer := newInMemoryTestSync(t, local, SyncOptions{})
+	require.NoError(t, createSchema(ctx, syncer.DB()))
+	_, err = syncer.pushEverything(ctx, nil)
+	require.NoError(t, err)
+	return local, NewStoreFromDB(syncer.DB())
+}
+
+// TestDuckAnalyticsEnergyParity guards against silent zero energy and an ignored SetEnergyConfig.
+func TestDuckAnalyticsEnergyParity(t *testing.T) {
+	ctx := context.Background()
+	local, duck := energyParityStores(t)
+	filter := db.UsageFilter{From: "2026-08-01", To: "2026-08-01"}
+	sqliteDaily, err := local.GetDailyUsage(ctx, filter)
+	require.NoError(t, err)
+	mid, err := duck.GetDailyUsage(ctx, filter)
+	require.NoError(t, err)
+	require.Positive(t, sqliteDaily.Totals.EnergyMicroWh)
+	assert.Equal(t, sqliteDaily.Totals.EnergyMicroWh, mid.Totals.EnergyMicroWh)
+	assert.Equal(t, sqliteDaily.Totals.EnergyStatus, mid.Totals.EnergyStatus)
+	sqliteTop, err := local.GetTopSessionsByCost(ctx, filter, 10)
+	require.NoError(t, err)
+	duckTop, err := duck.GetTopSessionsByCost(ctx, filter, 10)
+	require.NoError(t, err)
+	require.Len(t, duckTop, 1)
+	assert.Equal(t, sqliteTop[0].EnergyMicroWh, duckTop[0].EnergyMicroWh)
+	duck.SetEnergyConfig(energy.ScenarioHigh, nil)
+	high, err := duck.GetDailyUsage(ctx, filter)
+	require.NoError(t, err)
+	assert.Greater(t, high.Totals.EnergyMicroWh, mid.Totals.EnergyMicroWh)
+	duck.SetEnergyConfig(energy.ScenarioMid, map[string]float64{"claude-energy-parity-test": 1})
+	overridden, err := duck.GetDailyUsage(ctx, filter)
+	require.NoError(t, err)
+	assert.Less(t, overridden.Totals.EnergyMicroWh, mid.Totals.EnergyMicroWh)
+	assert.Equal(t, "override", overridden.Totals.EnergyStatus)
+}
+
+// TestDuckAggregateRowEnergyUsesRequestScopedBand: OutputPerMTok is $15
+// base, $30 banded above 200,000 input tokens (InputPerMTok 0, so
+// outputEquiv is exactly outputTok=1000 in both cases -- only E_out(price)
+// changes). With the literal fit (E_out(price)=price): base E_out($15)=15
+// -> 15,000 microWh; banded E_out($30)=30 -> 30,000 microWh.
+func TestDuckAggregateRowEnergyUsesRequestScopedBand(t *testing.T) {
+	resolver := export.NewPricingResolver([]export.EffectivePricingRow{{
+		ModelPattern: "banded-model",
+		Rates: export.ModelRates{
+			OutputPerMTok: money.MustParseDollars("15"),
+			Bands: []export.PricingBand{{
+				AboveInputTokens: 200_000, OutputPerMTok: money.MustParseDollars("30"),
+			}},
+		},
+	}})
+	estimator := energy.NewEstimator(
+		energy.FitSet{Pooled: energy.FitResult{A: 1, B: 1}}, energy.ScenarioMid, nil)
+	row := duckUsageAggregateRow{model: "banded-model", priceModel: "banded-model", inputTok: 300_000, outputTok: 1000}
+	baseWh, baseStatus := duckAggregateRowEnergy(estimator, row, false, resolver)
+	bandedWh, bandedStatus := duckAggregateRowEnergy(estimator, row, true, resolver)
+	assert.Equal(t, "ok", baseStatus)
+	assert.Equal(t, "ok", bandedStatus)
+	assert.Equal(t, int64(15_000), baseWh)
+	assert.Equal(t, int64(30_000), bandedWh)
 }

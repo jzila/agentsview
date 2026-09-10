@@ -250,6 +250,7 @@ func (b localArchiveQueryBackend) SessionUsage(
 	query sessionUsageQuery,
 ) (*sessionUsageOutput, int, error) {
 	applyCustomPricing(b.database, b.cfg)
+	applyEnergyConfig(b.database, b.cfg)
 	ensureUsagePricing(b.database, b.offline, b.cfg.CustomModelPricing)
 
 	resolvedID, known := resolveRawSessionID(

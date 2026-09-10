@@ -161,6 +161,18 @@ func (c *usageProbeConn) QueryContext(
 			columns: []string{"project", "cwd"},
 		}, nil
 	}
+	if strings.Contains(normalized, "as display_name") &&
+		strings.Contains(normalized, "where id in") {
+		return &usageProbeRows{
+			columns: []string{"id", "display_name", "agent", "project", "started_at"},
+			values: [][]driver.Value{
+				{"s-parent", "s-parent", "claude", "proj-a",
+					time.Date(2024, 6, 15, 10, 0, 0, 0, time.UTC)},
+				{"s-fork", "s-fork", "codex", "proj-b",
+					time.Date(2024, 6, 15, 10, 1, 0, 0, time.UTC)},
+			},
+		}, nil
+	}
 	if strings.Contains(normalized, "select id from sessions") {
 		return &usageProbeRows{
 			columns: []string{"id"},
@@ -281,6 +293,24 @@ func TestPGGetDailyUsageReturnsDedupedSessionCounts(t *testing.T) {
 	assert.Zero(t, result.SessionCounts.ByAgent["codex"])
 }
 
+// TestPGReadPathsComputeEnergy guards Postgres's read-time energy across
+// both usage read paths, the third storage backend alongside SQLite and DuckDB.
+func TestPGReadPathsComputeEnergy(t *testing.T) {
+	store := &Store{pg: newUsageProbeDB(t, &usageProbeState{})}
+	filter := db.UsageFilter{From: "2024-06-15", To: "2024-06-15"}
+
+	daily, err := store.GetDailyUsage(context.Background(), filter)
+	require.NoError(t, err)
+	require.Greater(t, daily.Totals.EnergyMicroWh, int64(0))
+	assert.Equal(t, "ok", daily.Totals.EnergyStatus)
+
+	top, err := store.GetTopSessionsByCost(context.Background(), filter, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, top)
+	assert.Greater(t, top[0].EnergyMicroWh, int64(0))
+	assert.Equal(t, "ok", top[0].EnergyStatus)
+}
+
 func TestPGUsageDedupTokenForRowFallsBackToSourceUUIDWhenClaudePairIncomplete(t *testing.T) {
 	got, ok := pgUsageDedupTokenForRow(
 		"message",
@@ -307,7 +337,7 @@ func TestPGUsageAmountsPreserveSessionSummaryUsageEventTokens(t *testing.T) {
 		},
 	}})
 
-	inTok, outTok, _, _, cost, _, priceErr := pgDailyUsageAmounts(
+	inTok, outTok, _, _, cost, _, _, _, priceErr := pgDailyUsageAmounts(
 		pgDailyUsageScanRow{
 			usageSource:  "session",
 			model:        "gpt-5.4",
@@ -315,6 +345,7 @@ func TestPGUsageAmountsPreserveSessionSummaryUsageEventTokens(t *testing.T) {
 			outputTokens: rawOutput,
 		},
 		resolver,
+		testPGEnergyEstimator(t),
 	)
 	require.NoError(t, priceErr)
 	assert.Equal(t, rawInput, inTok, "daily input")
@@ -373,15 +404,19 @@ func TestPGDailyUsageAmountsPricingBandRequestScope(t *testing.T) {
 			wantAggregate: 1,
 		},
 	}
+	// Mirrors internal/db's TestDailyUsageAmountsPricingBandRequestScope.
+	var baseEnergy, bandedEnergy int64
+	var sawBase, sawBanded bool
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resolver := pgPricingBandTestResolver()
-			_, _, _, _, cost, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
+			_, _, _, _, cost, _, energyMicroWh, energyStatus, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
 				messageOrdinal: tt.messageOrdinal,
 				usageSource:    tt.usageSource,
 				model:          "banded-model",
 				inputTokens:    300_000,
-			}, resolver)
+			}, resolver, testPGEnergyEstimator(t))
 			require.NoError(t, err)
 			block, err := resolver.BuildBlock()
 			require.NoError(t, err)
@@ -395,8 +430,20 @@ func TestPGDailyUsageAmountsPricingBandRequestScope(t *testing.T) {
 				require.Len(t, application.Bands, 1)
 				assert.Equal(t, tt.wantBand, application.Bands[0].RequestCount)
 			}
+
+			assert.Equal(t, "ok", energyStatus)
+			require.Positive(t, energyMicroWh)
+			if tt.wantBand > 0 {
+				bandedEnergy, sawBanded = energyMicroWh, true
+			} else {
+				baseEnergy, sawBase = energyMicroWh, true
+			}
 		})
 	}
+
+	require.True(t, sawBase)
+	require.True(t, sawBanded)
+	assert.NotEqual(t, baseEnergy, bandedEnergy)
 }
 
 func pgPricingBandTestResolver() *export.PricingResolver {
@@ -760,7 +807,7 @@ func TestPGUsageAmountsIncludeMessageReasoningTokens(t *testing.T) {
 			`"reasoning_tokens":500}`,
 	}
 
-	inTok, outTok, _, _, cost, _, err := pgDailyUsageAmounts(row, resolver)
+	inTok, outTok, _, _, cost, _, _, _, err := pgDailyUsageAmounts(row, resolver, testPGEnergyEstimator(t))
 	require.NoError(t, err)
 	assert.Equal(t, 1000, inTok)
 	assert.Zero(t, outTok)
@@ -795,7 +842,7 @@ func TestPGDailyUsageAmountsPrefersExactCustomKimiAlias(t *testing.T) {
 		},
 	})
 
-	_, _, _, _, cost, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
+	_, _, _, _, cost, _, _, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
 		usageSource: "provider",
 		model:       "kimi-for-coding",
 		ts: sql.NullTime{
@@ -803,7 +850,7 @@ func TestPGDailyUsageAmountsPrefersExactCustomKimiAlias(t *testing.T) {
 			Valid: true,
 		},
 		inputTokens: 1_000_000,
-	}, resolver)
+	}, resolver, testPGEnergyEstimator(t))
 
 	require.NoError(t, err)
 	assert.Equal(t, money.MustParseDollars("7"), cost)
@@ -822,11 +869,11 @@ func TestPGDailyUsageAmountsPricesGPTReserveAsLuna(t *testing.T) {
 		Rates:        export.ModelRates{InputPerMTok: lunaCost},
 	}})
 
-	_, _, _, _, cost, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
+	_, _, _, _, cost, _, _, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
 		usageSource: "provider",
 		model:       pricingpkg.GPTReserveModelName,
 		inputTokens: 1_000_000,
-	}, resolver)
+	}, resolver, testPGEnergyEstimator(t))
 	require.NoError(t, err)
 	assert.Equal(t, lunaCost, cost)
 	block, err := resolver.BuildBlock()
@@ -856,11 +903,11 @@ func TestPGDailyUsageAmountsPrefersExactCustomGPTReserve(t *testing.T) {
 		},
 	})
 
-	_, _, _, _, cost, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
+	_, _, _, _, cost, _, _, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
 		usageSource: "provider",
 		model:       pricingpkg.GPTReserveModelName,
 		inputTokens: 1_000_000,
-	}, resolver)
+	}, resolver, testPGEnergyEstimator(t))
 	require.NoError(t, err)
 	assert.Equal(t, money.MustParseDollars("7"), cost)
 	block, err := resolver.BuildBlock()
@@ -884,9 +931,9 @@ func TestPGDailyUsageAmountsForwardsProviderToBilling(t *testing.T) {
 			inputTokens: 1_000_000,
 		}
 	}
-	_, _, _, _, positCost, _, err := pgDailyUsageAmounts(row("positai"), resolver)
+	_, _, _, _, positCost, _, _, _, err := pgDailyUsageAmounts(row("positai"), resolver, testPGEnergyEstimator(t))
 	require.NoError(t, err)
-	_, _, _, _, plainCost, _, err := pgDailyUsageAmounts(row("claude"), resolver)
+	_, _, _, _, plainCost, _, _, _, err := pgDailyUsageAmounts(row("claude"), resolver, testPGEnergyEstimator(t))
 	require.NoError(t, err)
 	assert.Equal(t, money.MustParseDollars("1.1"), positCost)
 	assert.Equal(t, money.MustParseDollars("1"), plainCost)
@@ -901,12 +948,12 @@ func TestPGDailyUsageAmountsUsesBilledRatesForReportedCacheSavings(t *testing.T)
 		},
 	}})
 
-	_, _, _, _, cost, savings, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
+	_, _, _, _, cost, savings, _, _, err := pgDailyUsageAmounts(pgDailyUsageScanRow{
 		usageSource: "provider", model: "posit-model", providerID: "positai",
 		inputTokens: 1_000_000, cacheReadInputTokens: 1_000_000,
 		cost:       sql.NullInt64{Int64: 77, Valid: true},
 		costSource: "provider-reported",
-	}, resolver)
+	}, resolver, testPGEnergyEstimator(t))
 	require.NoError(t, err)
 	assert.Equal(t, money.Money{Microdollars: 77}, cost)
 	assert.Equal(t, money.Money{Microdollars: 990_000}, savings)

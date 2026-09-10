@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 )
@@ -12,6 +13,8 @@ import (
 type usageDailyFactsBucket struct {
 	input, output, cacheWrite, cacheRead int
 	cost                                 money.Money
+	energyMicroWh                        int64
+	energyStatus                         string
 }
 
 type usageDailyFactsSessionCost struct {
@@ -61,6 +64,20 @@ func (db *DB) assembleDailyUsageFacts(
 	ctx context.Context, filter UsageFilter, facts usageFactsResult,
 	resolver *export.PricingResolver,
 ) (DailyUsageResult, error) {
+	// Built once for the whole request (see estimateEnergyWith) rather than
+	// per group, so a concurrent SetEnergyConfig can't split this result
+	// across two scenarios. Skipped entirely when filter.SkipEnergy: a
+	// caller that only reads cost or tokens should not pay to parse the
+	// embedded fit or estimate energy for every group.
+	var estimator *energy.Estimator
+	if !filter.SkipEnergy {
+		var err error
+		estimator, err = db.energyEstimator()
+		if err != nil {
+			return DailyUsageResult{}, err
+		}
+	}
+
 	accum := make(map[usageCostAllocationKey]*usageDailyFactsBucket)
 	sessionCosts := make(map[string]usageDailyFactsSessionCost)
 	projectLabels := make(map[string]struct{})
@@ -82,6 +99,12 @@ func (db *DB) assembleDailyUsageFacts(
 		bucket.output += int(group.OutputTokens)
 		bucket.cacheWrite += int(group.CacheCreationTokens)
 		bucket.cacheRead += int(group.CacheReadTokens)
+
+		if !filter.SkipEnergy {
+			groupEnergyMicroWh, groupEnergyStatus := groupEnergyEstimate(estimator, resolver, group)
+			bucket.energyMicroWh += groupEnergyMicroWh
+			bucket.energyStatus = combineEnergyStatus(bucket.energyStatus, groupEnergyStatus)
+		}
 
 		groupCost := money.Money{Microdollars: group.CostMicrodollars}
 		session := sessionCosts[group.SessionID]
@@ -279,6 +302,7 @@ func buildDailyUsageFactsEntries(
 				ModelName: model, InputTokens: bucket.input,
 				OutputTokens: bucket.output, CacheCreationTokens: bucket.cacheWrite,
 				CacheReadTokens: bucket.cacheRead, Cost: bucket.cost,
+				EnergyMicroWh: bucket.energyMicroWh, EnergyStatus: bucket.energyStatus,
 			})
 		}
 		if breakdowns {
@@ -295,6 +319,8 @@ func buildDailyUsageFactsEntries(
 		totals.OutputTokens += entry.OutputTokens
 		totals.CacheCreationTokens += entry.CacheCreationTokens
 		totals.CacheReadTokens += entry.CacheReadTokens
+		totals.EnergyMicroWh += entry.EnergyMicroWh
+		totals.EnergyStatus = combineEnergyStatus(totals.EnergyStatus, entry.EnergyStatus)
 		daily = append(daily, entry)
 	}
 	return daily, totals, nil
@@ -307,6 +333,8 @@ func addUsageDailyFactsBucket(
 	left.output += right.output
 	left.cacheWrite += right.cacheWrite
 	left.cacheRead += right.cacheRead
+	left.energyMicroWh += right.energyMicroWh
+	left.energyStatus = combineEnergyStatus(left.energyStatus, right.energyStatus)
 	var err error
 	left.cost, err = money.Add(left.cost, right.cost)
 	if err != nil {
@@ -322,6 +350,8 @@ func addUsageDailyFactsEntryTotals(
 	entry.OutputTokens += bucket.output
 	entry.CacheCreationTokens += bucket.cacheWrite
 	entry.CacheReadTokens += bucket.cacheRead
+	entry.EnergyMicroWh += bucket.energyMicroWh
+	entry.EnergyStatus = combineEnergyStatus(entry.EnergyStatus, bucket.energyStatus)
 	var err error
 	entry.TotalCost, err = money.Add(entry.TotalCost, bucket.cost)
 	if err != nil {
@@ -356,6 +386,7 @@ func usageDailyProjectBreakdowns(
 			Project: name, InputTokens: bucket.input, OutputTokens: bucket.output,
 			CacheCreationTokens: bucket.cacheWrite,
 			CacheReadTokens:     bucket.cacheRead, Cost: bucket.cost,
+			EnergyMicroWh: bucket.energyMicroWh, EnergyStatus: bucket.energyStatus,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -376,6 +407,7 @@ func usageDailyAgentBreakdowns(
 			Agent: name, InputTokens: bucket.input, OutputTokens: bucket.output,
 			CacheCreationTokens: bucket.cacheWrite,
 			CacheReadTokens:     bucket.cacheRead, Cost: bucket.cost,
+			EnergyMicroWh: bucket.energyMicroWh, EnergyStatus: bucket.energyStatus,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -396,6 +428,7 @@ func usageDailyMachineBreakdowns(
 			MachineName: name, InputTokens: bucket.input,
 			OutputTokens: bucket.output, CacheCreationTokens: bucket.cacheWrite,
 			CacheReadTokens: bucket.cacheRead, Cost: bucket.cost,
+			EnergyMicroWh: bucket.energyMicroWh, EnergyStatus: bucket.energyStatus,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 	"go.kenn.io/agentsview/internal/parser"
@@ -40,6 +41,11 @@ type UsageRequest struct {
 	NoDefaultRange    bool   `json:"no_default_range,omitempty"`
 	Breakdowns        *bool  `json:"breakdowns,omitempty"`
 	SessionCounts     *bool  `json:"session_counts,omitempty"`
+	// Energy defaults true (nil) when unset. A caller that only reads cost
+	// or tokens sets this false so the read skips building the energy
+	// estimator and computing energy_micro_wh/energy_status (see
+	// db.UsageFilter.SkipEnergy).
+	Energy *bool `json:"energy,omitempty"`
 	// ProjectLabels and ExcludeProjectLabels carry exact internal labels
 	// resolved from opaque keys. Unlike the public string fields, they are
 	// never parsed as comma-separated transport input.
@@ -183,6 +189,10 @@ func BuildUsageFilter(req UsageRequest) (db.UsageFilter, error) {
 	if req.SessionCounts != nil {
 		sessionCounts = *req.SessionCounts
 	}
+	energyIncluded := true
+	if req.Energy != nil {
+		energyIncluded = *req.Energy
+	}
 	return db.UsageFilter{
 		From:    from,
 		To:      to,
@@ -208,6 +218,7 @@ func BuildUsageFilter(req UsageRequest) (db.UsageFilter, error) {
 		Termination:       req.Termination,
 		Breakdowns:        breakdowns,
 		SkipSessionCounts: !sessionCounts,
+		SkipEnergy:        !energyIncluded,
 	}, nil
 }
 
@@ -245,6 +256,8 @@ type ProjectTotal struct {
 	CacheCreationTokens int         `json:"cacheCreationTokens"`
 	CacheReadTokens     int         `json:"cacheReadTokens"`
 	Cost                money.Money `json:"cost"`
+	EnergyMicroWh       int64       `json:"energyMicroWh"`
+	EnergyStatus        string      `json:"energyStatus"`
 }
 
 // ModelTotal holds range-wide token and cost totals per model.
@@ -255,6 +268,8 @@ type ModelTotal struct {
 	CacheCreationTokens int         `json:"cacheCreationTokens"`
 	CacheReadTokens     int         `json:"cacheReadTokens"`
 	Cost                money.Money `json:"cost"`
+	EnergyMicroWh       int64       `json:"energyMicroWh"`
+	EnergyStatus        string      `json:"energyStatus"`
 }
 
 // AgentTotal holds range-wide token and cost totals per agent.
@@ -265,6 +280,8 @@ type AgentTotal struct {
 	CacheCreationTokens int         `json:"cacheCreationTokens"`
 	CacheReadTokens     int         `json:"cacheReadTokens"`
 	Cost                money.Money `json:"cost"`
+	EnergyMicroWh       int64       `json:"energyMicroWh"`
+	EnergyStatus        string      `json:"energyStatus"`
 }
 
 // CacheStats summarizes cache hit/miss for the period.
@@ -329,6 +346,8 @@ type UsagePairwiseComparisonSide struct {
 	SessionCount        int          `json:"sessionCount"`
 	CostPerSession      *money.Money `json:"costPerSession,omitempty"`
 	TokensPerSession    *float64     `json:"tokensPerSession,omitempty"`
+	EnergyMicroWh       int64        `json:"energyMicroWh"`
+	EnergyStatus        string       `json:"energyStatus"`
 }
 
 // UsagePairwiseComparisonDelta reports absolute and relative differences
@@ -352,6 +371,8 @@ type UsagePairwiseComparisonDelta struct {
 	CostPerSessionRatio     *float64     `json:"costPerSessionRatio"`
 	TokensPerSessionDelta   *float64     `json:"tokensPerSessionDelta"`
 	TokensPerSessionRatio   *float64     `json:"tokensPerSessionRatio"`
+	EnergyMicroWhDelta      int64        `json:"energyMicroWhDelta"`
+	EnergyMicroWhDeltaRatio *float64     `json:"energyMicroWhDeltaRatio"`
 }
 
 // UsagePairwiseComparisonResponse is the backend-computed response
@@ -432,6 +453,8 @@ func foldProjectTotals(daily []db.DailyUsageEntry) ([]ProjectTotal, error) {
 			pt.OutputTokens += pb.OutputTokens
 			pt.CacheCreationTokens += pb.CacheCreationTokens
 			pt.CacheReadTokens += pb.CacheReadTokens
+			pt.EnergyMicroWh += pb.EnergyMicroWh
+			pt.EnergyStatus = energy.CombineStatus(pt.EnergyStatus, pb.EnergyStatus)
 			var err error
 			pt.Cost, err = money.Add(pt.Cost, pb.Cost)
 			if err != nil {
@@ -470,6 +493,8 @@ func foldModelTotals(daily []db.DailyUsageEntry) ([]ModelTotal, error) {
 			mt.OutputTokens += mb.OutputTokens
 			mt.CacheCreationTokens += mb.CacheCreationTokens
 			mt.CacheReadTokens += mb.CacheReadTokens
+			mt.EnergyMicroWh += mb.EnergyMicroWh
+			mt.EnergyStatus = energy.CombineStatus(mt.EnergyStatus, mb.EnergyStatus)
 			var err error
 			mt.Cost, err = money.Add(mt.Cost, mb.Cost)
 			if err != nil {
@@ -505,6 +530,8 @@ func foldAgentTotals(daily []db.DailyUsageEntry) ([]AgentTotal, error) {
 			at.OutputTokens += ab.OutputTokens
 			at.CacheCreationTokens += ab.CacheCreationTokens
 			at.CacheReadTokens += ab.CacheReadTokens
+			at.EnergyMicroWh += ab.EnergyMicroWh
+			at.EnergyStatus = energy.CombineStatus(at.EnergyStatus, ab.EnergyStatus)
 			var err error
 			at.Cost, err = money.Add(at.Cost, ab.Cost)
 			if err != nil {
@@ -720,6 +747,8 @@ func usagePairwiseSideFromResult(
 		CacheCreationTokens: total.CacheCreationTokens,
 		CacheReadTokens:     total.CacheReadTokens,
 		SessionCount:        r.SessionCounts.Total,
+		EnergyMicroWh:       total.EnergyMicroWh,
+		EnergyStatus:        total.EnergyStatus,
 	}
 	side.TotalTokens = side.InputTokens + side.OutputTokens +
 		side.CacheCreationTokens + side.CacheReadTokens
@@ -759,6 +788,7 @@ func pairwiseDeltas(
 	cacheReadDelta := right.CacheReadTokens - left.CacheReadTokens
 	totalTokensDelta := right.TotalTokens - left.TotalTokens
 	sessionCountDelta := right.SessionCount - left.SessionCount
+	energyMicroWhDelta := right.EnergyMicroWh - left.EnergyMicroWh
 	return UsagePairwiseComparisonDelta{
 		TotalCostDelta:          totalCostDelta,
 		TotalCostDeltaRatio:     maybeMoneyRatio(left.TotalCost, totalCostDelta),
@@ -778,6 +808,8 @@ func pairwiseDeltas(
 		CostPerSessionRatio:     costPerSessionRatio,
 		TokensPerSessionDelta:   tokensPerSessionDelta,
 		TokensPerSessionRatio:   tokensPerSessionRatio,
+		EnergyMicroWhDelta:      energyMicroWhDelta,
+		EnergyMicroWhDeltaRatio: maybeFloatRatio(float64(left.EnergyMicroWh), float64(energyMicroWhDelta)),
 	}, nil
 }
 

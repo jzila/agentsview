@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/parser"
 )
@@ -718,6 +719,18 @@ type DB struct {
 	effectivePricing    map[string]export.ModelRates
 	emptyCatalogPricing map[string]export.ModelRates
 
+	// energyMu guards energyScenario and energyOverrides below: the
+	// GET/POST /api/v1/config/energy handler can call SetEnergyConfig
+	// concurrently with in-flight usage reads on other goroutines. Mirrors
+	// postgres.Store's energyMu.
+	energyMu sync.RWMutex
+	// energyScenario and energyOverrides configure the estimated-energy
+	// dimension computed at read time from usage.go/usage_cache_daily.go
+	// (see internal/energy and SetEnergyConfig). Left zero, the estimator
+	// uses the fit's mid scenario with no overrides.
+	energyScenario  energy.Scenario
+	energyOverrides map[string]float64
+
 	checkpointMu   sync.Mutex
 	checkpointStop chan struct{}
 	checkpointDone chan struct{}
@@ -983,6 +996,17 @@ func (db *DB) requireWritable() error {
 func (db *DB) SetCustomPricing(p map[string]config.CustomModelRate) {
 	db.customPricing = p
 	db.effectivePricing = nil
+}
+
+// SetEnergyConfig installs the config.toml-derived scenario and per-model
+// E_out overrides the energy estimator uses for every subsequent usage
+// read. An empty scenario behaves as energy.ScenarioMid; a nil overrides
+// map behaves as no overrides.
+func (db *DB) SetEnergyConfig(scenario energy.Scenario, overrides map[string]float64) {
+	db.energyMu.Lock()
+	defer db.energyMu.Unlock()
+	db.energyScenario = scenario
+	db.energyOverrides = overrides
 }
 
 // SetEffectivePricing installs in-memory pricing rows with explicit provenance

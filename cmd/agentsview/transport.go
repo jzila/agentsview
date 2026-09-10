@@ -17,6 +17,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/postgres"
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/update"
@@ -92,6 +93,9 @@ var openPGReadStore = func(
 	if err := applyRequiredCursorSecret(store, cfg); err != nil {
 		_ = store.Close()
 		return nil, nil, err
+	}
+	if cfg.Energy.Scenario != "" || len(cfg.Energy.Overrides) > 0 {
+		store.SetEnergyConfig(energy.Scenario(cfg.Energy.Scenario), cfg.Energy.Overrides)
 	}
 	return store, func() { _ = store.Close() }, nil
 }

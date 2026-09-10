@@ -12,6 +12,7 @@ import (
 	"github.com/tidwall/gjson"
 	"go.kenn.io/agentsview/internal/activity"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 	pricingpkg "go.kenn.io/agentsview/internal/pricing"
@@ -1160,10 +1161,11 @@ func pgUsagePricingTimestamp(ts sql.NullTime) time.Time {
 }
 
 func pgDailyUsageAmounts(
-	r pgDailyUsageScanRow, pricing *export.PricingResolver,
+	r pgDailyUsageScanRow, pricing *export.PricingResolver, estimator *energy.Estimator,
 ) (
 	inputTok, outputTok, cacheCrTok, cacheRdTok int,
 	cost, savings money.Money,
+	energyMicroWh int64, energyStatus string,
 	err error,
 ) {
 	inputTok, outputTok, cacheCrTok, cacheRdTok, reasoningTok :=
@@ -1176,7 +1178,24 @@ func pgDailyUsageAmounts(
 		pgUsagePricingTimestamp(r.pricingTS),
 	)
 	rates := lookup.Rates
+	// Energy always uses this plain (non-billing-policy-scaled) rate at the
+	// priced model identity, matching internal/db.dailyUsageAmounts'
+	// convention, so SQLite and PostgreSQL agree for the same archive.
+	// energyIdentity is captured now, before lookup is reassigned below by
+	// ResolveBilledAt, because it must be the pricing catalog's matched
+	// pattern from this initial ResolveAt call (see pgEnergyModelIdentity),
+	// not whatever lookup holds by the time Estimate is called. For a
+	// request-scoped row, energyRates is rebanded from this row's own
+	// token counts exactly the way cost bands below via
+	// CostForTokensScoped(requestScoped, ...), so a row whose tokens cross
+	// a pricing band's threshold prices its cost and its energy off the
+	// same rate.
+	energyRates := lookup.Rates
+	energyIdentity := energy.ModelIdentity(pricedModel, lookup)
 	requestScoped := pgUsageRowIsRequestScoped(r.usageSource, r.messageOrdinal)
+	if requestScoped {
+		energyRates = energyRates.RatesForTokens(inputTok, cacheCrTok, cacheRdTok)
+	}
 	if r.cost.Valid && r.costSource != db.CopilotReportedCostSource {
 		cost = money.Money{Microdollars: r.cost.Int64}
 		pricing.RecordResolvedReported(r.model, pricedModel, lookup)
@@ -1185,7 +1204,7 @@ func pgDailyUsageAmounts(
 			r.providerID, r.model, pgUsageLookupModel(r.model, r.pricingTS),
 			pgUsagePricingTimestamp(r.pricingTS))
 		if err != nil {
-			return 0, 0, 0, 0, money.Money{}, money.Money{}, err
+			return 0, 0, 0, 0, money.Money{}, money.Money{}, 0, "", err
 		}
 		rates = lookup.Rates
 		cost, err = rates.CostForTokensScoped(
@@ -1193,7 +1212,7 @@ func pgDailyUsageAmounts(
 			inputTok, outputTok, reasoningTok, cacheCrTok, cacheCr1hTok,
 			cacheRdTok)
 		if err != nil {
-			return 0, 0, 0, 0, money.Money{}, money.Money{},
+			return 0, 0, 0, 0, money.Money{}, money.Money{}, 0, "",
 				fmt.Errorf("pricing pg usage row for model %q: %w", r.model, err)
 		}
 		// Anthropic bills server-side web search per request on top of
@@ -1201,7 +1220,7 @@ func pgDailyUsageAmounts(
 		cost, err = export.AddWebSearchFee(
 			cost, pgDailyUsageRowWebSearchRequests(r))
 		if err != nil {
-			return 0, 0, 0, 0, money.Money{}, money.Money{},
+			return 0, 0, 0, 0, money.Money{}, money.Money{}, 0, "",
 				fmt.Errorf("pricing pg usage row for model %q: %w", r.model, err)
 		}
 		pgRecordComputedUsagePricing(
@@ -1220,7 +1239,7 @@ func pgDailyUsageAmounts(
 			r.providerID, r.model, pgUsageLookupModel(r.model, r.pricingTS),
 			pgUsagePricingTimestamp(r.pricingTS))
 		if err != nil {
-			return 0, 0, 0, 0, money.Money{}, money.Money{},
+			return 0, 0, 0, 0, money.Money{}, money.Money{}, 0, "",
 				fmt.Errorf("pricing pg reported usage cache savings for model %q: %w", r.model, err)
 		}
 		savingsRates = savingsLookup.Rates
@@ -1231,19 +1250,19 @@ func pgDailyUsageAmounts(
 	readRate, err := money.Sub(
 		savingsRates.InputPerMTok, savingsRates.CacheReadPerMTok)
 	if err != nil {
-		return 0, 0, 0, 0, money.Money{}, money.Money{},
+		return 0, 0, 0, 0, money.Money{}, money.Money{}, 0, "",
 			fmt.Errorf("deriving pg cache read rate for model %q: %w", r.model, err)
 	}
 	creationRate, err := money.Sub(
 		savingsRates.InputPerMTok, savingsRates.CacheWritePerMTok)
 	if err != nil {
-		return 0, 0, 0, 0, money.Money{}, money.Money{},
+		return 0, 0, 0, 0, money.Money{}, money.Money{}, 0, "",
 			fmt.Errorf("deriving pg cache creation rate for model %q: %w", r.model, err)
 	}
 	creation1hRate, err := money.Sub(
 		savingsRates.InputPerMTok, savingsRates.EffectiveCacheWrite1hPerMTok())
 	if err != nil {
-		return 0, 0, 0, 0, money.Money{}, money.Money{},
+		return 0, 0, 0, 0, money.Money{}, money.Money{}, 0, "",
 			fmt.Errorf("deriving pg 1h cache creation rate for model %q: %w", r.model, err)
 	}
 	savings, err = money.SignedCostPerMillion([]money.RatedTokens{
@@ -1252,10 +1271,23 @@ func pgDailyUsageAmounts(
 		{Tokens: int64(cacheCr1hTok), Rate: creation1hRate},
 	})
 	if err != nil {
-		return 0, 0, 0, 0, money.Money{}, money.Money{},
+		return 0, 0, 0, 0, money.Money{}, money.Money{}, 0, "",
 			fmt.Errorf("pricing pg cache savings for model %q: %w", r.model, err)
 	}
-	return inputTok, outputTok, cacheCrTok, cacheRdTok, cost, savings, nil
+	// estimator is nil when the caller set UsageFilter.SkipEnergy (see
+	// Store.GetDailyUsage), in which case energy is left at its zero value
+	// rather than computed.
+	if estimator != nil {
+		microWh, status := estimator.Estimate(
+			energyIdentity, energy.RatesFromModelRates(energyRates), energy.Tokens{
+				Input:      int64(inputTok),
+				Output:     energy.BillableOutputTokens(int64(outputTok), int64(reasoningTok)),
+				CacheWrite: int64(cacheCrTok), CacheRead: int64(cacheRdTok),
+			})
+		energyMicroWh, energyStatus = microWh, string(status)
+	}
+	return inputTok, outputTok, cacheCrTok, cacheRdTok, cost, savings,
+		energyMicroWh, energyStatus, nil
 }
 
 func pgDailyUsageRowTokens(
@@ -1429,7 +1461,7 @@ func pgSessionUsageBreakdownEntry(
 ) db.SessionUsageBreakdownEntry {
 	return pgSessionUsageBreakdownEntryWithWebSearchRequests(
 		r, ordinal, cost, priced,
-		pgUsageRowWebSearchRequests(r.usageSource, r.tokenJSON))
+		pgUsageRowWebSearchRequests(r.usageSource, r.tokenJSON), 0, "")
 }
 
 func pgSessionUsageBreakdownEntryWithWebSearchRequests(
@@ -1438,6 +1470,8 @@ func pgSessionUsageBreakdownEntryWithWebSearchRequests(
 	cost money.Money,
 	priced bool,
 	webSearches int,
+	energyMicroWh int64,
+	energyStatus string,
 ) db.SessionUsageBreakdownEntry {
 	var inTok, outTok, crTok, rdTok int
 	if r.usageSource == "message" {
@@ -1465,6 +1499,8 @@ func pgSessionUsageBreakdownEntryWithWebSearchRequests(
 		WebSearchRequests:        webSearches,
 		Cost:                     cost,
 		HasCost:                  priced,
+		EnergyMicroWh:            energyMicroWh,
+		EnergyStatus:             energyStatus,
 	}
 	if r.messageOrdinal.Valid {
 		messageOrdinal := int(r.messageOrdinal.Int64)
@@ -1564,6 +1600,10 @@ func (s *Store) GetSessionUsage(
 		return nil, fmt.Errorf("loading pg pricing: %w", err)
 	}
 	rateResolver := export.NewPricingResolver(pricing)
+	energyEstimator, err := s.energyEstimator()
+	if err != nil {
+		return nil, fmt.Errorf("loading pg energy estimator: %w", err)
+	}
 
 	pb := &paramBuilder{}
 	query := pgUsageRowSelect() + " AND u.session_id = " +
@@ -1580,6 +1620,8 @@ func (s *Store) GetSessionUsage(
 	var cost money.Money
 	var authoritativeCost *money.Money
 	var hasComputedCost, hasReportedCost bool
+	var energyMicroWh int64
+	var energyStatus string
 	contributing := false
 	allPriced := true
 	modelsSet := make(map[string]struct{})
@@ -1675,12 +1717,17 @@ func (s *Store) GetSessionUsage(
 			allPriced = false
 			unpricedSet[r.model] = struct{}{}
 		}
+		rowEnergyMicroWh, rowEnergyStatus :=
+			pgSessionRowEnergy(r, energyEstimator, rateResolver)
+		energyMicroWh += rowEnergyMicroWh
+		energyStatus = energy.CombineStatus(energyStatus, rowEnergyStatus)
 		breakdownCount++
 		if includeBreakdown {
 			breakdown = append(breakdown,
 				pgSessionUsageBreakdownEntryWithWebSearchRequests(
 					r, breakdownCount, c, priced,
-					snapshotWebSearchRequests[i]))
+					snapshotWebSearchRequests[i],
+					rowEnergyMicroWh, rowEnergyStatus))
 		}
 	}
 	if authoritativeCost != nil && len(breakdown) > 0 {
@@ -1707,6 +1754,8 @@ func (s *Store) GetSessionUsage(
 		HasCost:        authoritativeCost != nil || (contributing && allPriced),
 		BreakdownCount: breakdownCount,
 		Breakdown:      breakdown,
+		EnergyMicroWh:  energyMicroWh,
+		EnergyStatus:   energyStatus,
 	}
 	if out.HasCost {
 		if authoritativeCost != nil {
@@ -1746,6 +1795,17 @@ func (s *Store) GetDailyUsage(
 			fmt.Errorf("loading pg pricing: %w", err)
 	}
 	rateResolver := export.NewPricingResolver(pricing)
+	// Skipped entirely when f.SkipEnergy: a caller that only reads cost or
+	// tokens (see UsageFilter.SkipEnergy) should not pay to parse the
+	// embedded fit or estimate energy for every row.
+	var energyEstimator *energy.Estimator
+	if !f.SkipEnergy {
+		energyEstimator, err = s.energyEstimator()
+		if err != nil {
+			return db.DailyUsageResult{},
+				fmt.Errorf("loading pg energy estimator: %w", err)
+		}
+	}
 
 	pb := &paramBuilder{}
 	query := pgDailyUsageRowQuery(pb, f, pgHasTable(ctx, s.pg, "cursor_usage_events"))
@@ -1768,11 +1828,13 @@ func (s *Store) GetDailyUsage(
 		providerID string
 	}
 	type bucket struct {
-		inputTok  int
-		outputTok int
-		cacheCr   int
-		cacheRd   int
-		cost      money.Money
+		inputTok      int
+		outputTok     int
+		cacheCr       int
+		cacheRd       int
+		cost          money.Money
+		energyMicroWh int64
+		energyStatus  string
 	}
 	type sessionCost struct {
 		estimated     map[accumKey]money.Money
@@ -1825,8 +1887,9 @@ func (s *Store) GetDailyUsage(
 			projectLabels[r.project] = struct{}{}
 		}
 
-		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, savings, priceErr :=
-			pgDailyUsageAmounts(r, rateResolver)
+		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, savings,
+			rowEnergyMicroWh, rowEnergyStatus, priceErr :=
+			pgDailyUsageAmounts(r, rateResolver, energyEstimator)
 		if priceErr != nil {
 			return db.DailyUsageResult{}, priceErr
 		}
@@ -1850,6 +1913,8 @@ func (s *Store) GetDailyUsage(
 		b.outputTok += outputTok
 		b.cacheCr += cacheCrTok
 		b.cacheRd += cacheRdTok
+		b.energyMicroWh += rowEnergyMicroWh
+		b.energyStatus = energy.CombineStatus(b.energyStatus, rowEnergyStatus)
 
 		sc := sessionCosts[r.sessionID]
 		if sc.estimated == nil {
@@ -1942,11 +2007,13 @@ func (s *Store) GetDailyUsage(
 			model string
 		}
 		type modelAccum struct {
-			inputTok  int
-			outputTok int
-			cacheCr   int
-			cacheRd   int
-			cost      money.Money
+			inputTok      int
+			outputTok     int
+			cacheCr       int
+			cacheRd       int
+			cost          money.Money
+			energyMicroWh int64
+			energyStatus  string
 		}
 		dm := make(map[dateModelKey]*modelAccum)
 		for key, b := range accum {
@@ -1960,6 +2027,8 @@ func (s *Store) GetDailyUsage(
 			ma.outputTok += b.outputTok
 			ma.cacheCr += b.cacheCr
 			ma.cacheRd += b.cacheRd
+			ma.energyMicroWh += b.energyMicroWh
+			ma.energyStatus = energy.CombineStatus(ma.energyStatus, b.energyStatus)
 			ma.cost, err = money.Add(ma.cost, b.cost)
 			if err != nil {
 				return db.DailyUsageResult{}, fmt.Errorf(
@@ -2020,6 +2089,8 @@ func (s *Store) GetDailyUsage(
 				entry.OutputTokens += ma.outputTok
 				entry.CacheCreationTokens += ma.cacheCr
 				entry.CacheReadTokens += ma.cacheRd
+				entry.EnergyMicroWh += ma.energyMicroWh
+				entry.EnergyStatus = energy.CombineStatus(entry.EnergyStatus, ma.energyStatus)
 				entry.TotalCost, err = money.Add(entry.TotalCost, ma.cost)
 				if err != nil {
 					return db.DailyUsageResult{}, fmt.Errorf(
@@ -2032,6 +2103,8 @@ func (s *Store) GetDailyUsage(
 					CacheCreationTokens: ma.cacheCr,
 					CacheReadTokens:     ma.cacheRd,
 					Cost:                ma.cost,
+					EnergyMicroWh:       ma.energyMicroWh,
+					EnergyStatus:        ma.energyStatus,
 				})
 			}
 			entry.ModelBreakdowns = mbd
@@ -2041,6 +2114,8 @@ func (s *Store) GetDailyUsage(
 			totals.OutputTokens += entry.OutputTokens
 			totals.CacheCreationTokens += entry.CacheCreationTokens
 			totals.CacheReadTokens += entry.CacheReadTokens
+			totals.EnergyMicroWh += entry.EnergyMicroWh
+			totals.EnergyStatus = energy.CombineStatus(totals.EnergyStatus, entry.EnergyStatus)
 			totals.TotalCost, err = money.Add(totals.TotalCost, entry.TotalCost)
 			if err != nil {
 				return db.DailyUsageResult{}, fmt.Errorf(
@@ -2111,6 +2186,8 @@ func (s *Store) GetDailyUsage(
 		cur.outputTok += b.outputTok
 		cur.cacheCr += b.cacheCr
 		cur.cacheRd += b.cacheRd
+		cur.energyMicroWh += b.energyMicroWh
+		cur.energyStatus = energy.CombineStatus(cur.energyStatus, b.energyStatus)
 		cur.cost, err = money.Add(cur.cost, b.cost)
 		if err != nil {
 			return db.DailyUsageResult{}, fmt.Errorf(
@@ -2123,6 +2200,8 @@ func (s *Store) GetDailyUsage(
 		cur.outputTok += b.outputTok
 		cur.cacheCr += b.cacheCr
 		cur.cacheRd += b.cacheRd
+		cur.energyMicroWh += b.energyMicroWh
+		cur.energyStatus = energy.CombineStatus(cur.energyStatus, b.energyStatus)
 		cur.cost, err = money.Add(cur.cost, b.cost)
 		if err != nil {
 			return db.DailyUsageResult{}, fmt.Errorf(
@@ -2135,6 +2214,8 @@ func (s *Store) GetDailyUsage(
 		cur.outputTok += b.outputTok
 		cur.cacheCr += b.cacheCr
 		cur.cacheRd += b.cacheRd
+		cur.energyMicroWh += b.energyMicroWh
+		cur.energyStatus = energy.CombineStatus(cur.energyStatus, b.energyStatus)
 		cur.cost, err = money.Add(cur.cost, b.cost)
 		if err != nil {
 			return db.DailyUsageResult{}, fmt.Errorf(
@@ -2147,6 +2228,8 @@ func (s *Store) GetDailyUsage(
 		cur.outputTok += b.outputTok
 		cur.cacheCr += b.cacheCr
 		cur.cacheRd += b.cacheRd
+		cur.energyMicroWh += b.energyMicroWh
+		cur.energyStatus = energy.CombineStatus(cur.energyStatus, b.energyStatus)
 		cur.cost, err = money.Add(cur.cost, b.cost)
 		if err != nil {
 			return db.DailyUsageResult{}, fmt.Errorf(
@@ -2191,6 +2274,8 @@ func (s *Store) GetDailyUsage(
 			entry.OutputTokens += b.outputTok
 			entry.CacheCreationTokens += b.cacheCr
 			entry.CacheReadTokens += b.cacheRd
+			entry.EnergyMicroWh += b.energyMicroWh
+			entry.EnergyStatus = energy.CombineStatus(entry.EnergyStatus, b.energyStatus)
 			entry.TotalCost, err = money.Add(entry.TotalCost, b.cost)
 			if err != nil {
 				return db.DailyUsageResult{}, fmt.Errorf(
@@ -2203,6 +2288,8 @@ func (s *Store) GetDailyUsage(
 				CacheCreationTokens: b.cacheCr,
 				CacheReadTokens:     b.cacheRd,
 				Cost:                b.cost,
+				EnergyMicroWh:       b.energyMicroWh,
+				EnergyStatus:        b.energyStatus,
 			})
 		}
 		entry.ModelBreakdowns = mbd
@@ -2216,6 +2303,8 @@ func (s *Store) GetDailyUsage(
 				CacheCreationTokens: b.cacheCr,
 				CacheReadTokens:     b.cacheRd,
 				Cost:                b.cost,
+				EnergyMicroWh:       b.energyMicroWh,
+				EnergyStatus:        b.energyStatus,
 			})
 		}
 		sort.Slice(pbd, func(i, j int) bool {
@@ -2235,6 +2324,8 @@ func (s *Store) GetDailyUsage(
 				CacheCreationTokens: b.cacheCr,
 				CacheReadTokens:     b.cacheRd,
 				Cost:                b.cost,
+				EnergyMicroWh:       b.energyMicroWh,
+				EnergyStatus:        b.energyStatus,
 			})
 		}
 		sort.Slice(abd, func(i, j int) bool {
@@ -2256,6 +2347,8 @@ func (s *Store) GetDailyUsage(
 				CacheCreationTokens: b.cacheCr,
 				CacheReadTokens:     b.cacheRd,
 				Cost:                b.cost,
+				EnergyMicroWh:       b.energyMicroWh,
+				EnergyStatus:        b.energyStatus,
 			})
 		}
 		sort.Slice(machineBreakdowns, func(i, j int) bool {
@@ -2271,6 +2364,8 @@ func (s *Store) GetDailyUsage(
 		totals.OutputTokens += entry.OutputTokens
 		totals.CacheCreationTokens += entry.CacheCreationTokens
 		totals.CacheReadTokens += entry.CacheReadTokens
+		totals.EnergyMicroWh += entry.EnergyMicroWh
+		totals.EnergyStatus = energy.CombineStatus(totals.EnergyStatus, entry.EnergyStatus)
 		totals.TotalCost, err = money.Add(totals.TotalCost, entry.TotalCost)
 		if err != nil {
 			return db.DailyUsageResult{}, fmt.Errorf(
@@ -2337,6 +2432,10 @@ func (s *Store) GetTopSessionsByCost(
 		return nil, fmt.Errorf("loading pg pricing: %w", err)
 	}
 	rateResolver := export.NewPricingResolver(pricing)
+	energyEstimator, err := s.energyEstimator()
+	if err != nil {
+		return nil, fmt.Errorf("loading pg energy estimator: %w", err)
+	}
 
 	pb := &paramBuilder{}
 	query := pgTopSessionsUsageRowQuery(pb, f)
@@ -2358,6 +2457,8 @@ func (s *Store) GetTopSessionsByCost(
 		totalTokens       int
 		cost              money.Money
 		authoritativeCost *money.Money
+		energyMicroWh     int64
+		energyStatus      string
 	}
 
 	accum := make(map[string]*sessAccum)
@@ -2388,8 +2489,9 @@ func (s *Store) GetTopSessionsByCost(
 			seen[key] = struct{}{}
 		}
 
-		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, _, priceErr :=
-			pgDailyUsageAmounts(r, rateResolver)
+		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, _,
+			rowEnergyMicroWh, rowEnergyStatus, priceErr :=
+			pgDailyUsageAmounts(r, rateResolver, energyEstimator)
 		if priceErr != nil {
 			return nil, priceErr
 		}
@@ -2405,6 +2507,8 @@ func (s *Store) GetTopSessionsByCost(
 		sa.cacheCreateTokens += cacheCrTok
 		sa.cacheReadTokens += cacheRdTok
 		sa.totalTokens += inputTok + outputTok + cacheCrTok + cacheRdTok
+		sa.energyMicroWh += rowEnergyMicroWh
+		sa.energyStatus = energy.CombineStatus(sa.energyStatus, rowEnergyStatus)
 		sa.cost, priceErr = money.Add(sa.cost, cost)
 		if priceErr != nil {
 			return nil, fmt.Errorf("summing pg top-session cost: %w", priceErr)
@@ -2433,6 +2537,8 @@ func (s *Store) GetTopSessionsByCost(
 			CacheCreationTokens: sa.cacheCreateTokens,
 			CacheReadTokens:     sa.cacheReadTokens,
 			TotalTokens:         sa.totalTokens,
+			EnergyMicroWh:       sa.energyMicroWh,
+			EnergyStatus:        sa.energyStatus,
 			Cost: func() money.Money {
 				if sa.authoritativeCost != nil {
 					return *sa.authoritativeCost

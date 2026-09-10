@@ -380,6 +380,8 @@ type sessionUsageResponse struct {
 	HasTokenData      bool        `json:"has_token_data"`
 	Cost              money.Money `json:"cost"`
 	HasCost           bool        `json:"has_cost"`
+	EnergyMicroWh     int64       `json:"energy_micro_wh"`
+	EnergyStatus      string      `json:"energy_status,omitempty"`
 	// CostUSD is a deprecated compatibility alias for
 	// Cost.Microdollars/1e6; see db.SessionUsage.CostUSD.
 	CostUSD             *float64                        `json:"cost_usd,omitempty"`
@@ -419,6 +421,8 @@ type sessionUsageBreakdownResponse struct {
 	WebSearchRequests        int         `json:"web_search_requests,omitzero"`
 	Cost                     money.Money `json:"cost"`
 	HasCost                  bool        `json:"has_cost"`
+	EnergyMicroWh            int64       `json:"energy_micro_wh"`
+	EnergyStatus             string      `json:"energy_status,omitempty"`
 }
 
 type sessionUsageErrorBody struct {
@@ -461,6 +465,8 @@ func newSessionUsageHumaResponse(usage *db.SessionUsage) sessionUsageResponse {
 			WebSearchRequests:        entry.WebSearchRequests,
 			Cost:                     entry.Cost,
 			HasCost:                  entry.HasCost,
+			EnergyMicroWh:            entry.EnergyMicroWh,
+			EnergyStatus:             entry.EnergyStatus,
 		})
 	}
 	return sessionUsageResponse{
@@ -472,6 +478,8 @@ func newSessionUsageHumaResponse(usage *db.SessionUsage) sessionUsageResponse {
 		HasTokenData:      usage.HasTokenData,
 		Cost:              usage.Cost,
 		HasCost:           usage.HasCost,
+		EnergyMicroWh:     usage.EnergyMicroWh,
+		EnergyStatus:      usage.EnergyStatus,
 		CostUSD:           usage.CostUSD,
 		CostSource:        usage.CostSource,
 		AICredits:         usage.AICredits,

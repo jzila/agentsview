@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 )
 
@@ -26,6 +27,17 @@ type usageFactsGroup struct {
 	ReportedCount, BaseRequestCount              int
 	BandThreshold                                *int
 	DiscardedSnapshotOutputTokens                int64
+	// EnergyBillableOutputTokens sums each underlying fact's own
+	// output-or-reasoning-fallback value (see billableEnergyOutputTokens)
+	// before merging into this group. Applying that per-row fallback after
+	// summing raw OutputTokens/ReasoningTokens across every fact in the
+	// group would be wrong: a group merging one ordinary row (output 100,
+	// reasoning 0) with one reasoning-only row (output 0, reasoning 1000)
+	// must estimate on 1100 output-equivalent tokens, but the merged raw
+	// sums (output 100, reasoning 1000) fall back to nothing since the
+	// merged output is nonzero, silently dropping the reasoning-only row's
+	// contribution.
+	EnergyBillableOutputTokens int64
 }
 
 type usageFactsResult struct {
@@ -177,7 +189,7 @@ func readUsageDailyRollups(
 	rows, err := conn.QueryContext(ctx, `SELECT i.session_id, r.local_date,
 		r.reported_model, r.provider_id, r.priced_model, r.matched_pattern, r.rate_ok,
 		r.pricing_timestamp,
-		r.input_tokens, r.output_tokens, r.reasoning_tokens,
+		r.input_tokens, r.output_tokens, r.reasoning_tokens, r.energy_billable_output_tokens,
 		r.cache_creation_tokens, r.cache_read_tokens,
 		r.estimated_cost_microdollars, r.savings_microdollars,
 		r.authoritative_cost_microdollars, r.computed_request_count,
@@ -204,6 +216,7 @@ func readUsageDailyRollups(
 			&group.ProviderID, &group.PricedModel, &group.MatchedPattern, &rateOK,
 			&group.PricingTimestamp,
 			&group.InputTokens, &group.OutputTokens, &group.ReasoningTokens,
+			&group.EnergyBillableOutputTokens,
 			&group.CacheCreationTokens, &group.CacheReadTokens,
 			&group.CostMicrodollars, &group.SavingsMicrodollars, &authoritative,
 			&group.ComputedRequestCount, &group.ComputedAggregateCount,
@@ -667,6 +680,8 @@ func addUsageFactToGroup(
 		{&group.CacheReadTokens, row.CacheReadTokens},
 		{&group.CostMicrodollars, row.CostMicrodollars},
 		{&group.SavingsMicrodollars, row.SavingsMicrodollars},
+		// Computed per fact, before merging (see EnergyBillableOutputTokens).
+		{&group.EnergyBillableOutputTokens, energy.BillableOutputTokens(row.OutputTokens, row.ReasoningTokens)},
 	}
 	for _, field := range fields {
 		value, err := addUsageInt64(*field.target, field.value)

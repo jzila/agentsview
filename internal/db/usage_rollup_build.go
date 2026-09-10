@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/export"
 	"go.kenn.io/agentsview/internal/money"
 	"go.kenn.io/agentsview/internal/usagefacts"
@@ -54,15 +55,22 @@ type usageDailyContribution struct {
 	RateHash                                   string
 	BandThreshold                              *int
 	InputTokens, OutputTokens, ReasoningTokens int64
-	CacheCreationTokens, CacheReadTokens       int64
-	WebSearchRequests                          int64
-	CostMicrodollars, SavingsMicrodollars      int64
-	AuthoritativeCostMicrodollars              *int64
-	ComputedRequestCount                       int
-	ComputedAggregateCount                     int
-	ReportedCount, BaseRequestCount            int
-	DiscardedSnapshotOutputTokens              int64
-	ProviderID                                 string
+	// EnergyBillableOutputTokens sums each underlying fact's own
+	// output-or-reasoning-fallback value (billableEnergyOutputTokens)
+	// before those facts merge into this row -- see the identical field on
+	// usageFactsGroup for why computing it afterward from the merged
+	// OutputTokens/ReasoningTokens sums would silently drop a reasoning-
+	// only fact's contribution when merged with an ordinary-output fact.
+	EnergyBillableOutputTokens            int64
+	CacheCreationTokens, CacheReadTokens  int64
+	WebSearchRequests                     int64
+	CostMicrodollars, SavingsMicrodollars int64
+	AuthoritativeCostMicrodollars         *int64
+	ComputedRequestCount                  int
+	ComputedAggregateCount                int
+	ReportedCount, BaseRequestCount       int
+	DiscardedSnapshotOutputTokens         int64
+	ProviderID                            string
 }
 
 type usageActivityContribution struct {
@@ -289,6 +297,11 @@ func addUsageFactToDailyContribution(
 		{&row.InputTokens, fact.Fact.InputTokens, "input tokens"},
 		{&row.OutputTokens, fact.Fact.OutputTokens, "output tokens"},
 		{&row.ReasoningTokens, fact.Fact.ReasoningTokens, "reasoning tokens"},
+		{
+			&row.EnergyBillableOutputTokens,
+			energy.BillableOutputTokens(fact.Fact.OutputTokens, fact.Fact.ReasoningTokens),
+			"energy billable output tokens",
+		},
 		{&row.CacheCreationTokens, fact.Fact.CacheCreationTokens, "cache creation tokens"},
 		{&row.CacheReadTokens, fact.Fact.CacheReadTokens, "cache read tokens"},
 		{&row.WebSearchRequests, fact.Fact.WebSearchRequests, "web search requests"},

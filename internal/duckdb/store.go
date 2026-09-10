@@ -20,6 +20,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/energy"
 	"go.kenn.io/agentsview/internal/secrets"
 )
 
@@ -57,6 +58,14 @@ type Store struct {
 	cursorMu       sync.RWMutex
 	cursorSecret   []byte
 	customPricing  map[string]config.CustomModelRate
+
+	// energyMu guards energyScenario and energyOverrides below: `duckdb
+	// serve`'s GET/POST /api/v1/config/energy handler can call
+	// SetEnergyConfig concurrently with in-flight usage reads on other
+	// goroutines. Mirrors db.DB.energyMu/postgres.Store.energyMu.
+	energyMu        sync.RWMutex
+	energyScenario  energy.Scenario
+	energyOverrides map[string]float64
 }
 
 // NewStore opens a local DuckDB mirror file as a db.Store. The handle is
@@ -220,6 +229,22 @@ func (r duckSingleRow) Scan(dest ...any) error {
 
 func (s *Store) SetCustomPricing(p map[string]config.CustomModelRate) {
 	s.customPricing = p
+}
+
+// SetEnergyConfig installs the config.toml-derived scenario and per-model
+// E_out overrides the energy estimator uses for every subsequent usage
+// read from this store. An empty scenario behaves as energy.ScenarioMid; a
+// nil overrides map behaves as no overrides. Mirrors
+// db.DB.SetEnergyConfig/postgres.Store.SetEnergyConfig. Only `duckdb
+// serve` wires this in (see cmd/agentsview/duckdb.go), since that is the
+// one DuckDB entry point that reads config.toml directly; the disposable
+// push mirror behind `agentsview serve` has no server of its own and never
+// calls it, so it keeps using the fit's mid scenario with no overrides.
+func (s *Store) SetEnergyConfig(scenario energy.Scenario, overrides map[string]float64) {
+	s.energyMu.Lock()
+	defer s.energyMu.Unlock()
+	s.energyScenario = scenario
+	s.energyOverrides = overrides
 }
 
 func (s *Store) SetCursorSecret(secret []byte) {

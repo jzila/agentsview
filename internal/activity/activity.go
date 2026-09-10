@@ -83,6 +83,13 @@ type UsageRow struct {
 	ClaudeRequestID   string
 	SourceUUID        string
 	UsageDedupKey     string
+	// EnergyMicroWh and EnergyStatus are this row's own energy estimate,
+	// computed the same way as the row-level cost above (see
+	// internal/db/energy.go, internal/postgres/energy.go, and
+	// internal/duckdb/energy.go). Populated only for surviving
+	// (deduplicated) rows, matching Cost/CostSource.
+	EnergyMicroWh int64
+	EnergyStatus  string
 }
 
 // SessionTokenCoverage records the canonical token categories represented for

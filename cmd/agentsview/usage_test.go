@@ -111,7 +111,7 @@ func TestPrintUsageStatuslineJSON(t *testing.T) {
 				},
 			}
 			out := captureStdout(t, func() {
-				printUsageStatuslineJSON(result, tc.agent, "2026-08-04")
+				printUsageStatuslineJSON(result, tc.agent, "2026-08-04", false)
 			})
 
 			var got usageStatuslineReport
@@ -132,11 +132,36 @@ func TestPrintUsageStatuslineJSONKeepsExactMicrodollars(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		printUsageStatuslineJSON(result, "", "2026-08-04")
+		printUsageStatuslineJSON(result, "", "2026-08-04", false)
 	})
 
 	assert.Contains(t, out, `"microdollars": 25000001`)
 	assert.NotContains(t, out, "25.000001")
+}
+
+// TestPrintUsageStatuslineJSONEnergyGatedByFlag: energy fields are absent
+// by default and present only when the --energy flag is set, matching how
+// the cost fields always flow but energy opts in (UsageStatuslineConfig.Energy).
+func TestPrintUsageStatuslineJSONEnergyGatedByFlag(t *testing.T) {
+	result := db.DailyUsageResult{
+		Totals: db.UsageTotals{
+			TotalCost:     money.MustParseDollars("9.61"),
+			EnergyMicroWh: 12_000_000, EnergyStatus: "ok",
+		},
+	}
+
+	without := captureStdout(t, func() {
+		printUsageStatuslineJSON(result, "", "2026-08-04", false)
+	})
+	assert.NotContains(t, without, "energy_micro_wh")
+
+	with := captureStdout(t, func() {
+		printUsageStatuslineJSON(result, "", "2026-08-04", true)
+	})
+	var got usageStatuslineReport
+	require.NoError(t, json.Unmarshal([]byte(with), &got))
+	assert.Equal(t, int64(12_000_000), got.EnergyMicroWh)
+	assert.Equal(t, "ok", got.EnergyStatus)
 }
 
 func TestUsageDailyGolden(t *testing.T) {

@@ -86,6 +86,10 @@ export type GetApiV1UsageTopSessionsParams = {
    */
   session_counts?: boolean;
   /**
+   * Compute energy_micro_wh/energy_status
+   */
+  energy?: boolean;
+  /**
    * Maximum number of sessions
    * @minimum 0
    * @maximum 100

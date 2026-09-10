@@ -532,6 +532,7 @@ func newUsageCommand() *cobra.Command {
 	cmd.AddCommand(newUsageDailyCommand())
 	cmd.AddCommand(newUsageStatuslineCommand())
 	cmd.AddCommand(newUsageCursorCommand())
+	cmd.AddCommand(newUsageEnergyModelCommand())
 	return cmd
 }
 
@@ -556,6 +557,8 @@ func newUsageDailyCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&cfg.Offline, "offline", false, "Use fallback pricing only")
 	cmd.Flags().BoolVar(&cfg.NoSync, "no-sync", false, "Skip on-demand sync before querying")
 	cmd.Flags().StringVar(&cfg.Timezone, "timezone", "", "IANA timezone for date bucketing")
+	cmd.Flags().BoolVar(&cfg.Energy, "energy", false,
+		"Show an estimated energy (Wh) column; see docs/internal/energy-model.md")
 	return cmd
 }
 
@@ -575,6 +578,8 @@ func newUsageStatuslineCommand() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.Agent, "agent", "", "Filter by agent name")
 	cmd.Flags().BoolVar(&cfg.Offline, "offline", false, "Use fallback pricing only")
 	cmd.Flags().BoolVar(&cfg.NoSync, "no-sync", false, "Skip on-demand sync before querying")
+	cmd.Flags().BoolVar(&cfg.Energy, "energy", false,
+		"Show an estimated energy (Wh) figure alongside cost; see docs/internal/energy-model.md")
 	return cmd
 }
 

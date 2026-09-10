@@ -28,7 +28,7 @@ func TestUsageRollupDailyMatchesFacts(t *testing.T) {
 	} {
 		facts := getDailyUsageLegacyForRollupTest(t, database, filter)
 		rollup := getDailyUsageRollupForTest(t, database, filter)
-		assert.Equal(t, facts, rollup)
+		assertDailyUsageResultsMatch(t, facts, rollup)
 	}
 }
 
@@ -65,7 +65,7 @@ func TestUsageRollupDailyMatchesFactsForCrossSessionSnapshots(t *testing.T) {
 	} {
 		facts := getDailyUsageLegacyForRollupTest(t, database, filter)
 		rollup := getDailyUsageRollupForTest(t, database, filter)
-		assert.Equal(t, facts, rollup)
+		assertDailyUsageResultsMatch(t, facts, rollup)
 	}
 }
 
@@ -92,7 +92,7 @@ func TestUsageRollupDailyMatchesCursorAutomatedScope(t *testing.T) {
 	} {
 		legacy := getDailyUsageLegacyForRollupTest(t, database, filter)
 		rollup := getDailyUsageRollupForTest(t, database, filter)
-		assert.Equal(t, legacy, rollup)
+		assertDailyUsageResultsMatch(t, legacy, rollup)
 	}
 }
 
@@ -125,7 +125,7 @@ func TestUsageRollupDailyMatchesLastCopilotReportedCost(t *testing.T) {
 	legacy := getDailyUsageLegacyForRollupTest(t, database, filter)
 	rollup := getDailyUsageRollupForTest(t, database, filter)
 	assert.Equal(t, money.MustParseDollars("3.00"), legacy.Totals.TotalCost)
-	assert.Equal(t, legacy, rollup)
+	assertDailyUsageResultsMatch(t, legacy, rollup)
 }
 
 func countUsageRollupExceptionRows(t *testing.T, database *DB) int {
@@ -164,7 +164,7 @@ func TestUsageRollupUniqueClaudeSessionStoresNoExceptions(t *testing.T) {
 	legacy := getDailyUsageLegacyForRollupTest(t, database, filter)
 	rollup := getDailyUsageRollupForTest(t, database, filter)
 
-	assert.Equal(t, legacy, rollup)
+	assertDailyUsageResultsMatch(t, legacy, rollup)
 	assert.Equal(t, 42, rollup.Totals.OutputTokens)
 	assert.Zero(t, countUsageRollupExceptionRows(t, database),
 		"unique Claude identities must aggregate into daily rows")
@@ -185,7 +185,7 @@ func TestUsageRollupSameDaySnapshotDuplicateAggregates(t *testing.T) {
 	legacy := getDailyUsageLegacyForRollupTest(t, database, filter)
 	rollup := getDailyUsageRollupForTest(t, database, filter)
 
-	assert.Equal(t, legacy, rollup)
+	assertDailyUsageResultsMatch(t, legacy, rollup)
 	assert.Equal(t, 25, rollup.Totals.OutputTokens,
 		"only the winning snapshot output may count")
 	assert.Zero(t, countUsageRollupExceptionRows(t, database),
@@ -206,7 +206,7 @@ func TestUsageRollupSiblingArrivalInvalidatesFinalizedAggregate(t *testing.T) {
 
 	legacy := getDailyUsageLegacyForRollupTest(t, database, filter)
 	rollup := getDailyUsageRollupForTest(t, database, filter)
-	assert.Equal(t, legacy, rollup,
+	assertDailyUsageResultsMatch(t, legacy, rollup,
 		"a new cross-session sibling must invalidate the finalized aggregate")
 	assert.Equal(t, 20, rollup.Totals.OutputTokens)
 }
@@ -231,7 +231,7 @@ func TestUsageRollupSiblingRemovalRestoresFinalizedAggregate(t *testing.T) {
 
 	legacy := getDailyUsageLegacyForRollupTest(t, database, filter)
 	rollup := getDailyUsageRollupForTest(t, database, filter)
-	assert.Equal(t, legacy, rollup)
+	assertDailyUsageResultsMatch(t, legacy, rollup)
 	assert.Equal(t, 30, rollup.Totals.OutputTokens,
 		"both requests must count once the identities no longer collide")
 	assert.Zero(t, countUsageRollupExceptionRows(t, database),
@@ -252,7 +252,7 @@ func TestUsageRollupSessionDeletionRestoresFinalizedAggregate(t *testing.T) {
 
 	legacy := getDailyUsageLegacyForRollupTest(t, database, filter)
 	rollup := getDailyUsageRollupForTest(t, database, filter)
-	assert.Equal(t, legacy, rollup)
+	assertDailyUsageResultsMatch(t, legacy, rollup)
 	assert.Equal(t, 10, rollup.Totals.OutputTokens,
 		"a deleted sibling must stop competing immediately")
 }
@@ -423,7 +423,7 @@ func TestUsageRollupSeededRandomParitySweep(t *testing.T) {
 	} {
 		legacy := getDailyUsageLegacyForRollupTest(t, database, filter)
 		rollup := getDailyUsageRollupForTest(t, database, filter)
-		assert.Equal(t, legacy, rollup, "required filter %#v", filter)
+		assertDailyUsageResultsMatch(t, legacy, rollup, "required filter %#v", filter)
 	}
 
 	random := rand.New(rand.NewSource(1454)) //nolint:gosec // deterministic test sweep
@@ -450,7 +450,7 @@ func TestUsageRollupSeededRandomParitySweep(t *testing.T) {
 		}
 		legacy := getDailyUsageLegacyForRollupTest(t, database, filter)
 		rollup := getDailyUsageRollupForTest(t, database, filter)
-		assert.Equal(t, legacy, rollup, "iteration %d filter %#v", iteration, filter)
+		assertDailyUsageResultsMatch(t, legacy, rollup, "iteration %d filter %#v", iteration, filter)
 	}
 }
 
@@ -487,6 +487,62 @@ func TestUsageRollupQueryRejectsDifferentInstallOrPricing(t *testing.T) {
 	require.NoError(t, err)
 	_, err = cache.usageRollupQuery(t.Context(), snapshot, filter, installs, resolver)
 	assert.ErrorIs(t, err, errUsageCacheSourceChanged)
+}
+
+// energyRoundingToleranceMicroWh bounds the legacy (per-row rounding) vs
+// rollup (per-bucket rounding) drift in EnergyMicroWh; both call the same
+// estimator with the same rates, so the drift is a few micro-Wh at most.
+const energyRoundingToleranceMicroWh = 4
+
+// stripEnergyForRollupParity zeroes every EnergyMicroWh/EnergyStatus field
+// in place and returns the zeroed values in a stable walk order, shared by
+// both the legacy and rollup result for the same query.
+func stripEnergyForRollupParity(r *DailyUsageResult) []int64 {
+	var values []int64
+	stripOne := func(microWh *int64, status *string) {
+		values = append(values, *microWh)
+		*microWh, *status = 0, ""
+	}
+	for i := range r.Daily {
+		d := &r.Daily[i]
+		stripOne(&d.EnergyMicroWh, &d.EnergyStatus)
+		for j := range d.ModelBreakdowns {
+			b := &d.ModelBreakdowns[j]
+			stripOne(&b.EnergyMicroWh, &b.EnergyStatus)
+		}
+		for j := range d.ProjectBreakdowns {
+			b := &d.ProjectBreakdowns[j]
+			stripOne(&b.EnergyMicroWh, &b.EnergyStatus)
+		}
+		for j := range d.AgentBreakdowns {
+			b := &d.AgentBreakdowns[j]
+			stripOne(&b.EnergyMicroWh, &b.EnergyStatus)
+		}
+		for j := range d.MachineBreakdowns {
+			b := &d.MachineBreakdowns[j]
+			stripOne(&b.EnergyMicroWh, &b.EnergyStatus)
+		}
+	}
+	stripOne(&r.Totals.EnergyMicroWh, &r.Totals.EnergyStatus)
+	return values
+}
+
+// assertDailyUsageResultsMatch is the legacy-vs-rollup parity assertion
+// every test in this file uses: exact equality on everything except
+// EnergyMicroWh/EnergyStatus, which may drift by energyRoundingToleranceMicroWh.
+func assertDailyUsageResultsMatch(
+	t *testing.T, legacy, rollup DailyUsageResult, msgAndArgs ...any,
+) {
+	t.Helper()
+	legacyEnergy := stripEnergyForRollupParity(&legacy)
+	rollupEnergy := stripEnergyForRollupParity(&rollup)
+	if assert.Equal(t, len(legacyEnergy), len(rollupEnergy), msgAndArgs...) {
+		for i := range legacyEnergy {
+			assert.InDelta(t, legacyEnergy[i], rollupEnergy[i],
+				energyRoundingToleranceMicroWh, msgAndArgs...)
+		}
+	}
+	assert.Equal(t, legacy, rollup, msgAndArgs...)
 }
 
 func getDailyUsageLegacyForRollupTest(
