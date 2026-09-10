@@ -111,6 +111,11 @@ props or forked styles.
 - `Modal`'s close-X `aria-label` is hardcoded English; needs a label prop.
 - `TopBar` cannot express "no active tab"; on routes that are not tabs
   (settings), the first tab renders as current.
+- No slider/range control exists yet. The rate-limit alert threshold
+  controls in `RateLimitAlertSettings.svelte` use a native
+  `<input type="range">` with minimal scoped styling on the app's CSS
+  custom properties as a stopgap; switch to a kit-ui `Slider` once one
+  ships.
 
 Resolved upstream (adopted at the current pin): `RefreshControl` takes a
 `formatAge` prop, `DateRangePicker`'s `weekOfLabel` substitutes a `{date}`

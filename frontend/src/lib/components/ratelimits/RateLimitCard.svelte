@@ -5,7 +5,7 @@
     rateLimits,
     type RateLimitWindow,
   } from "../../stores/ratelimits.svelte.js";
-  import { formatResetCountdown, formatWindowLength } from "../../utils/rateLimitFormat.js";
+  import { formatResetCountdown, formatWindowLength, windowLabel } from "../../utils/rateLimitFormat.js";
   import RateLimitHistoryChart from "./RateLimitHistoryChart.svelte";
 
   interface Props {
@@ -89,22 +89,15 @@
   // for this window (see ServiceRateLimitWindow.windowMinutes) -- that
   // case falls back to a window-kind label ("Session limit" for
   // "primary", "Weekly limit" for "secondary") instead of a generic
-  // "{duration} limit" with a placeholder "—" duration. limit_name is the
+  // "{duration} limit" with a placeholder "—" duration -- shared via
+  // rateLimitFormat.ts's windowLabel() so the notification runner
+  // describes the same window the same way. limit_name is the
   // vendor-reported, human-readable name (e.g. "GPT-5.3-Codex-Spark");
   // limit_id (a slot name like "codex") is the fallback for older/partial
   // snapshots that never carried a name.
-  const windowLabel = $derived(
-    snapshot.windowMinutes === undefined
-      ? snapshot.windowKind === "primary"
-        ? m.rate_limits_window_session()
-        : m.rate_limits_window_weekly()
-      : snapshot.windowMinutes === 10080
-        ? m.rate_limits_window_weekly()
-        : m.rate_limits_window_generic({ duration: formatWindowLength(snapshot.windowMinutes) }),
-  );
   const cardHeader = $derived(
     m.rate_limits_card_header({
-      window: windowLabel,
+      window: windowLabel(snapshot.windowMinutes, snapshot.windowKind),
       name: snapshot.limitName || snapshot.limitId,
     }),
   );

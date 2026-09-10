@@ -795,7 +795,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个项目" }
+      "match": {
+        "countPlural=other": "{countNumber} 个项目"
+      }
     }
   ],
   "data_summary_sessions": [
@@ -806,7 +808,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话"
+      }
     }
   ],
   "data_summary_governed": [
@@ -817,7 +821,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话受规则管理" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话受规则管理"
+      }
     }
   ],
   "data_filter_projects": "筛选项目",
@@ -837,7 +843,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 条已启用的规则以此项目为目标" }
+      "match": {
+        "countPlural=other": "{countNumber} 条已启用的规则以此项目为目标"
+      }
     }
   ],
   "data_recorded_original": "已记录为规则的原始标签",
@@ -861,7 +869,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_cwd_unavailable": "此文件夹无法安全映射，因为它不可用或表示文件系统根目录。",
@@ -880,7 +890,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "匹配 {countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "匹配 {countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_sessions_changing": [
@@ -891,7 +903,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "将更改 {countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "将更改 {countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_projects_affected": [
@@ -902,7 +916,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个项目" }
+      "match": {
+        "countPlural=other": "{countNumber} 个项目"
+      }
     }
   ],
   "data_reclassify_normalized_target": "将保存为 {project}",
@@ -915,7 +931,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_zero_matches": "此前缀与存档中的任何会话都不匹配。",
@@ -1987,5 +2005,30 @@
   "rate_limits_window_generic": "{duration} 限额",
   "rate_limits_card_header": "{window} [{name}]",
   "rate_limits_vendor_codex": "Codex",
-  "rate_limits_resets_unknown": "重置时间未知"
+  "rate_limits_resets_unknown": "重置时间未知",
+  "settings_rate_limit_alerts_enable_label": "在窗口用尽前通知我",
+  "settings_rate_limit_alerts_enabled": "已启用",
+  "settings_rate_limit_alerts_disabled": "已停用",
+  "settings_rate_limit_alerts_default_threshold_label": "剩余量低于此值时提醒",
+  "settings_rate_limit_alerts_default_threshold_hint": "适用于未单独设置阈值的窗口。",
+  "settings_rate_limit_alerts_percent_aria": "提醒阈值百分比",
+  "settings_rate_limit_alerts_permission_granted": "已允许浏览器通知。",
+  "settings_rate_limit_alerts_permission_denied": "此站点的浏览器通知已被屏蔽。请在浏览器的网站设置中允许通知，然后重新开启此选项。",
+  "settings_rate_limit_alerts_permission_default": "开启此选项时，系统会请求您允许通知。",
+  "settings_rate_limit_alerts_permission_unsupported": "此浏览器不支持通知功能。",
+  "rate_limit_alert_title": "{label}：已用 {usedPercent}%",
+  "rate_limit_alert_body_with_reset": "将在 {resetIn} 后重置",
+  "rate_limit_alert_body_reset_unknown": "重置时间未知",
+  "settings_rate_limit_alerts_slider_value": "剩余 {percent}%",
+  "settings_rate_limit_alerts_vendor_overrides_title": "各供应商阈值",
+  "settings_rate_limit_alerts_vendor_override_checkbox": "为 {vendor} 使用不同的阈值",
+  "settings_rate_limit_alerts_sources_title": "用量来源",
+  "settings_rate_limit_alerts_sources_hint": "取消勾选某个来源即可静音其提醒，而无需关闭全部提醒。",
+  "settings_rate_limit_alerts_sources_empty": "同步用量数据后，来源将显示在此处。",
+  "settings_notifications_title": "通知",
+  "settings_notifications_description": "按类型管理浏览器通知。",
+  "settings_search_keywords_notifications": "通知 代理 供应商 配额 速率限制 阈值 浏览器 提醒 用量 窗口",
+  "settings_notifications_rate_limits_card_title": "速率限制",
+  "settings_rate_limit_alerts_exhausted_checkbox": "窗口用尽时也提醒我",
+  "rate_limit_exhausted_title": "{label} 已用尽"
 }

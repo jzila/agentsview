@@ -5,6 +5,7 @@ export type SettingsPanelId =
   | "language"
   | "date-ranges"
   | "terminal"
+  | "notifications"
   | "agent-directories"
   | "worktree-mappings"
   | "embeddings"
@@ -58,6 +59,14 @@ export function settingsPanels(): SettingsPanelMeta[] {
       description: m.settings_terminal_description(),
       group: preferences,
       keywords: m.settings_search_keywords_terminal(),
+    },
+    {
+      id: "notifications",
+      label: m.settings_notifications_title(),
+      title: m.settings_notifications_title(),
+      description: m.settings_notifications_description(),
+      group: preferences,
+      keywords: m.settings_search_keywords_notifications(),
     },
     {
       id: "agent-directories",

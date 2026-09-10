@@ -3,7 +3,12 @@
 // non-localized unit abbreviations in utils/duration.ts (formatDuration).
 // These are short technical units, not sentences, so they are not routed
 // through the Paraglide message catalogues; the surrounding sentence
-// ("Resets in {value}") is.
+// ("Resets in {value}") is. `windowLabel` below is the one exception: it
+// composes a full localized phrase, shared as-is between RateLimitCard and
+// the notification runner so both describe an unknown-duration window the
+// same way.
+
+import { m } from "../i18n/index.js";
 
 const MINUTES_PER_HOUR = 60;
 const MINUTES_PER_DAY = MINUTES_PER_HOUR * 24;
@@ -17,6 +22,22 @@ export function formatWindowLength(minutes: number | undefined): string {
   const hours = Math.floor(minutes / MINUTES_PER_HOUR);
   const mins = minutes % MINUTES_PER_HOUR;
   return `${hours}h ${mins}m`;
+}
+
+/**
+ * Localized window-length phrase for a rate-limit window's card header
+ * and notification titles, e.g. "Weekly limit", "5h limit", or "Session
+ * limit"/"Weekly limit" when `windowMinutes` is unreported -- falling
+ * back to `windowKind` (Codex's only two kinds today) to still
+ * distinguish two windows sharing a limit name, rather than a duration
+ * placeholder like "— limit" that reads identically for both.
+ */
+export function windowLabel(windowMinutes: number | undefined, windowKind: string): string {
+  if (windowMinutes === undefined) {
+    return windowKind === "primary" ? m.rate_limits_window_session() : m.rate_limits_window_weekly();
+  }
+  if (windowMinutes === 10_080) return m.rate_limits_window_weekly();
+  return m.rate_limits_window_generic({ duration: formatWindowLength(windowMinutes) });
 }
 
 /**

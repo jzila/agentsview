@@ -795,7 +795,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 個專案" }
+      "match": {
+        "countPlural=other": "{countNumber} 個專案"
+      }
     }
   ],
   "data_summary_sessions": [
@@ -806,7 +808,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 個會話" }
+      "match": {
+        "countPlural=other": "{countNumber} 個會話"
+      }
     }
   ],
   "data_summary_governed": [
@@ -817,7 +821,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 個會話受規則管理" }
+      "match": {
+        "countPlural=other": "{countNumber} 個會話受規則管理"
+      }
     }
   ],
   "data_filter_projects": "篩選專案",
@@ -837,7 +843,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 條已啟用的規則以此專案為目標" }
+      "match": {
+        "countPlural=other": "{countNumber} 條已啟用的規則以此專案為目標"
+      }
     }
   ],
   "data_recorded_original": "已記錄為規則的原始標籤",
@@ -861,7 +869,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 個工作階段" }
+      "match": {
+        "countPlural=other": "{countNumber} 個工作階段"
+      }
     }
   ],
   "data_reclassify_cwd_unavailable": "此資料夾無法安全對應，因為它無法使用或代表檔案系統根目錄。",
@@ -880,7 +890,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "符合 {countNumber} 個工作階段" }
+      "match": {
+        "countPlural=other": "符合 {countNumber} 個工作階段"
+      }
     }
   ],
   "data_reclassify_sessions_changing": [
@@ -891,7 +903,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "將變更 {countNumber} 個工作階段" }
+      "match": {
+        "countPlural=other": "將變更 {countNumber} 個工作階段"
+      }
     }
   ],
   "data_reclassify_projects_affected": [
@@ -902,7 +916,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 個項目" }
+      "match": {
+        "countPlural=other": "{countNumber} 個項目"
+      }
     }
   ],
   "data_reclassify_normalized_target": "將儲存為 {project}",
@@ -915,7 +931,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 個工作階段" }
+      "match": {
+        "countPlural=other": "{countNumber} 個工作階段"
+      }
     }
   ],
   "data_reclassify_zero_matches": "此前綴與封存中的任何工作階段都不符合。",
@@ -1987,5 +2005,30 @@
   "rate_limits_window_generic": "{duration} 限額",
   "rate_limits_card_header": "{window} [{name}]",
   "rate_limits_vendor_codex": "Codex",
-  "rate_limits_resets_unknown": "重置時間未知"
+  "rate_limits_resets_unknown": "重置時間未知",
+  "settings_rate_limit_alerts_enable_label": "在視窗用盡前通知我",
+  "settings_rate_limit_alerts_enabled": "已啟用",
+  "settings_rate_limit_alerts_disabled": "已停用",
+  "settings_rate_limit_alerts_default_threshold_label": "剩餘量低於此值時提醒",
+  "settings_rate_limit_alerts_default_threshold_hint": "適用於未單獨設定閾值的視窗。",
+  "settings_rate_limit_alerts_percent_aria": "提醒閾值百分比",
+  "settings_rate_limit_alerts_permission_granted": "已允許瀏覽器通知。",
+  "settings_rate_limit_alerts_permission_denied": "此網站的瀏覽器通知已被封鎖。請在瀏覽器的網站設定中允許通知，然後重新開啟此選項。",
+  "settings_rate_limit_alerts_permission_default": "開啟此選項時，系統會請求您允許通知。",
+  "settings_rate_limit_alerts_permission_unsupported": "此瀏覽器不支援通知功能。",
+  "rate_limit_alert_title": "{label}：已使用 {usedPercent}%",
+  "rate_limit_alert_body_with_reset": "將於 {resetIn} 後重置",
+  "rate_limit_alert_body_reset_unknown": "重置時間未知",
+  "settings_rate_limit_alerts_slider_value": "剩餘 {percent}%",
+  "settings_rate_limit_alerts_vendor_overrides_title": "各供應商閾值",
+  "settings_rate_limit_alerts_vendor_override_checkbox": "為 {vendor} 使用不同的閾值",
+  "settings_rate_limit_alerts_sources_title": "用量來源",
+  "settings_rate_limit_alerts_sources_hint": "取消勾選某個來源即可靜音其提醒，而不必關閉全部提醒。",
+  "settings_rate_limit_alerts_sources_empty": "同步用量資料後，來源將顯示在此處。",
+  "settings_notifications_title": "通知",
+  "settings_notifications_description": "依類型管理瀏覽器通知。",
+  "settings_search_keywords_notifications": "通知 代理 供應商 配額 速率限制 閾值 瀏覽器 提醒 用量 視窗",
+  "settings_notifications_rate_limits_card_title": "速率限制",
+  "settings_rate_limit_alerts_exhausted_checkbox": "視窗用盡時也提醒我",
+  "rate_limit_exhausted_title": "{label} 已用盡"
 }

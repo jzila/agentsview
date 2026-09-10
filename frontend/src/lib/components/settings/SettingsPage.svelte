@@ -21,6 +21,7 @@
   import DateRangeSettings from "./DateRangeSettings.svelte";
   import TerminalSettings from "./TerminalSettings.svelte";
   import ArchiveContentSettings from "./ArchiveContentSettings.svelte";
+  import NotificationsSettings from "./NotificationsSettings.svelte";
   import EmbeddingsSettings from "./EmbeddingsSettings.svelte";
   import GithubSettings from "./GithubSettings.svelte";
   import LanguageSettings from "./LanguageSettings.svelte";
@@ -214,6 +215,8 @@
                 <DateRangeSettings />
               {:else if meta.id === "terminal"}
                 <TerminalSettings />
+              {:else if meta.id === "notifications"}
+                <NotificationsSettings />
               {:else if meta.id === "agent-directories"}
                 <AgentDirSettings />
               {:else if meta.id === "worktree-mappings"}

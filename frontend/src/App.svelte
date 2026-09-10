@@ -74,6 +74,7 @@
   import { router } from "./lib/stores/router.svelte.js";
   import { starred } from "./lib/stores/starred.svelte.js";
   import { pins } from "./lib/stores/pins.svelte.js";
+  import { rateLimitAlertRunner } from "./lib/stores/rateLimitAlertRunner.svelte.js";
   import { settings } from "./lib/stores/settings.svelte.js";
   import { analyticsPageDates } from "./lib/stores/analyticsPageDates.js";
   import {
@@ -736,6 +737,7 @@
     sync.loadVersion();
     sync.checkForUpdate();
     sync.startPolling();
+    const stopRateLimitAlerts = rateLimitAlertRunner.start();
 
     const healthCleanup = setupVisibilityHealthCheck(getBase, {
       onBackendDegraded: () => sync.markBackendDegraded(),
@@ -752,6 +754,7 @@
       window.removeEventListener("show-about", showAbout);
       sync.stopPolling();
       sync.unwatchSession();
+      stopRateLimitAlerts();
     };
   });
 
