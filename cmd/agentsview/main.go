@@ -458,7 +458,9 @@ func runServe(cfg config.Config, opts serveOptions) {
 		pricingRefreshRunner = engine
 	}
 	seedPricing(database, pricingRefreshRunner)
-	setupPollerScheduler(ctx, cfg, database, pricingRefreshRunner)
+	pollerScheduler := setupPollerScheduler(
+		ctx, cfg, database, pricingRefreshRunner, idleTracker,
+	)
 
 	rtOpts := serveRuntimeOptions{
 		Mode:           "serve",
@@ -483,6 +485,9 @@ func runServe(cfg config.Config, opts serveOptions) {
 		server.WithIdleTracker(idleTracker),
 		server.WithHTTPRemoteCleanupRegistry(httpRemoteCleanupRegistry),
 		server.WithPprof(opts.Pprof),
+	}
+	if pollerScheduler != nil {
+		srvOpts = append(srvOpts, server.WithPollerStatus(pollerScheduler.Status))
 	}
 	srvOpts = append(srvOpts, vectorServe.ServerOpts...)
 	if src := newVectorPushSource(cfg); src != nil {

@@ -70,6 +70,7 @@ func newDoctorCommand() *cobra.Command {
 		},
 	}
 	cmd.AddCommand(newDoctorSyncCommand())
+	cmd.AddCommand(newDoctorPollersCommand())
 	return cmd
 }
 

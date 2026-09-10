@@ -164,6 +164,7 @@ chart_palette = "agentsview"
 | `[[session_sources]]`               | Additional filesystem session roots with per-root machine labels — see [Filesystem Session Sync](/docs/filesystem-sync/)                                                                                                                                  |
 | `[automated]`                       | Custom automated-session patterns — see [Automated Session Detection](#automated-session-detection)                                                                                                                                                       |
 | `[custom_model_pricing]`            | Per-model price overrides for usage reports — see [Custom Model Pricing](/docs/token-usage/#custom-model-pricing)                                                                                                                                         |
+| `[poller]`                          | Background poller (pricing refresh, Cursor usage) master switch and per-job interval overrides — see [Background Pollers](#background-pollers)                                                                                                           |
 
 The `cursor_secret` is generated automatically on first run. For Gist
 publishing, AgentsView first uses a saved `github_token`. For local browser
@@ -308,6 +309,37 @@ The legacy unprefixed names `CURSOR_ADMIN_API_KEY`, `CURSOR_ADMIN_EMAIL`, and
 variable is unset. The email and user ID values are default filters; pass
 `--email` or `--user-id` to `agentsview usage cursor` to override them for one
 import.
+
+## Background Pollers
+
+A writable daemon runs a small set of background jobs on their own interval,
+each recording its own last-attempt, last-success, last-error, and next-run
+state (`agentsview doctor pollers`, or `GET /api/v1/system/pollers`). Today
+that is the LiteLLM/GenAI/OpenRouter pricing catalog refresh (always
+registered) and, when `cursor_admin_api_key` is configured, a Cursor Admin
+usage poll that keeps the archive current between manual
+`agentsview usage cursor` runs — the same fetch-and-store path backs both.
+
+```toml
+[poller]
+enabled = true
+
+[poller.intervals]
+pricing-refresh = "24h"
+cursor-usage = "30m"
+```
+
+| Field              | Description                                                                                                                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `poller.enabled`   | Master switch for all background poller jobs (default `true`); can also be set with `AGENTSVIEW_POLLER_ENABLED`. Disabling it does not affect on-demand paths like `agentsview usage cursor`. |
+| `poller.intervals` | Per-job poll interval overrides, keyed by the job's stable name (`pricing-refresh`, `cursor-usage`)                                                                                            |
+
+Background polls never count as daemon activity: they cannot keep an
+otherwise-idle detached daemon from exiting after `daemon_idle_timeout`.
+Periodic session sync, the semantic-search embedding schedule
+(`[vector.embed]`), and automatic recall extraction (`[recall.extract]`) are
+scheduled separately and are not yet on this poller; see
+`docs/agents/background-work.md` for that follow-up.
 
 ## Session Discovery
 

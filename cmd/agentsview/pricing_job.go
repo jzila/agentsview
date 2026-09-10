@@ -38,8 +38,8 @@ type pricingRefreshJob struct {
 }
 
 // newPricingRefreshJob builds the pricing refresh Job. interval overrides
-// the default 24h cadence; a non-positive value falls back to
-// pricingRefreshJobInterval.
+// the default 24h cadence (e.g. from [poller.intervals] config); a
+// non-positive value falls back to pricingRefreshJobInterval.
 func newPricingRefreshJob(
 	database *db.DB, runner pricingRefreshExclusiveRunner, interval time.Duration,
 ) *pricingRefreshJob {
@@ -66,12 +66,14 @@ func (j *pricingRefreshJob) Run(ctx context.Context) error {
 // scheduled tick shortly after a refresh (including one following a
 // restart, once persisted status is restored) does not immediately force
 // another one. It gates only the steady-tick path: an explicit TriggerNow
-// bypasses it by design.
+// bypasses it by design. Pricing refresh is a background poll: it must not
+// count toward the daemon idle-shutdown timer.
 func pricingRefreshJobOptions() poller.Options {
 	return poller.Options{
-		Jitter:     pricingRefreshJobJitter,
-		Cooldown:   pricingrefresh.RefreshCooldown,
-		RunAtStart: true,
+		Jitter:           pricingRefreshJobJitter,
+		Cooldown:         pricingrefresh.RefreshCooldown,
+		RunAtStart:       true,
+		KeepsDaemonAlive: false,
 	}
 }
 

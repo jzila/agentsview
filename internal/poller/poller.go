@@ -2,8 +2,9 @@
 // behavior every hand-rolled ticker loop in this codebase otherwise
 // reimplements: jitter, a cooldown recorded before each attempt, capped
 // exponential backoff on consecutive failures, honoring a job-supplied
-// Retry-After, and context cancellation. Read docs/agents/background-work.md
-// before adding a new Job.
+// Retry-After, context cancellation, and keeping background polls out of the
+// daemon idle-shutdown accounting by default. Read
+// docs/agents/background-work.md before adding a new Job.
 package poller
 
 import (
@@ -19,8 +20,9 @@ import (
 
 // Job is one background task the Scheduler drives on an interval.
 type Job interface {
-	// Name is a stable identifier used for status and TriggerNow lookups
-	// (e.g. "pricing-refresh").
+	// Name is a stable identifier used for status, config interval
+	// overrides, and TriggerNow lookups (e.g. "pricing-refresh",
+	// "cursor-usage", "claude-usage:<account>").
 	Name() string
 	// Interval is the steady-state period between successful attempts.
 	Interval() time.Duration
@@ -61,6 +63,10 @@ type Options struct {
 	// of waiting for the first interval tick. It still observes
 	// Cooldown against a status restored from a StatusStore.
 	RunAtStart bool
+	// KeepsDaemonAlive marks this job's runs as activity for the daemon
+	// idle-shutdown timer. Background polls default to false: a
+	// scheduled poll must never keep an otherwise-idle daemon alive.
+	KeepsDaemonAlive bool
 }
 
 // Status is the observable state of one registered Job.
@@ -96,6 +102,16 @@ func (realClock) Now() time.Time { return time.Now() }
 
 func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
+// IdleNotifier is the subset of server.IdleTracker the Scheduler needs to
+// mark a job's runs as daemon activity. It is a small local interface
+// (rather than an internal/server import) so internal/poller stays a leaf
+// package.
+type IdleNotifier interface {
+	// Do runs fn as tracked activity. Implementations are expected to be
+	// nil-safe, matching server.IdleTracker.
+	Do(fn func())
+}
+
 // job bundles one registration's Job, Options, and live state.
 type job struct {
 	j    Job
@@ -113,6 +129,7 @@ type job struct {
 type Scheduler struct {
 	clock   Clock
 	store   StatusStore
+	idle    IdleNotifier
 	logf    func(format string, args ...any)
 	randSrc func(max time.Duration) time.Duration
 
@@ -131,6 +148,12 @@ type SchedulerOption func(*Scheduler)
 // clock; production code should not need it.
 func WithClock(clock Clock) SchedulerOption {
 	return func(s *Scheduler) { s.clock = clock }
+}
+
+// WithIdleNotifier wires the daemon idle tracker so jobs whose Options set
+// KeepsDaemonAlive count as activity.
+func WithIdleNotifier(idle IdleNotifier) SchedulerOption {
+	return func(s *Scheduler) { s.idle = idle }
 }
 
 // withRand overrides jitter generation for deterministic tests.
@@ -443,7 +466,7 @@ func (s *Scheduler) attempt(ctx context.Context, rj *job, bypassCooldown bool) e
 	s.setStatus(rj, status)
 	s.saveStatus(ctx, status)
 
-	runErr := rj.j.Run(ctx)
+	runErr := s.runJob(ctx, rj)
 
 	now2 := s.clock.Now()
 	if runErr == nil {
@@ -473,6 +496,15 @@ func (s *Scheduler) setStatus(rj *job, status Status) {
 	rj.mu.Lock()
 	rj.status = status
 	rj.mu.Unlock()
+}
+
+func (s *Scheduler) runJob(ctx context.Context, rj *job) error {
+	if rj.opts.KeepsDaemonAlive && s.idle != nil {
+		var err error
+		s.idle.Do(func() { err = rj.j.Run(ctx) })
+		return err
+	}
+	return rj.j.Run(ctx)
 }
 
 // backoffBaseFraction sets the first backoff step relative to interval, so
