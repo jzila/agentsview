@@ -11,7 +11,6 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/cursorusage"
-	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/timeutil"
 )
 
@@ -96,41 +95,19 @@ func runUsageCursor(cfg UsageCursorConfig) error {
 	}
 
 	client := newCursorUsageClient(apiKey)
-	events, err := client.FetchAllUsageEvents(context.Background(), cursorusage.Query{
-		StartDate: start,
-		EndDate:   end,
-		PageSize:  pageSize,
-		Email:     email,
-		UserID:    userID,
-	})
+	// FetchAndStore also backs the cursor-usage poller.Job, so on-demand
+	// ingestion and the background poll share one implementation and the
+	// same cursor_usage_events dedup path.
+	fetched, err := cursorusage.FetchAndStore(
+		context.Background(), client, database, start, end, pageSize, email, userID,
+	)
 	if err != nil {
-		return err
-	}
-
-	rows := make([]db.CursorUsageEvent, 0, len(events))
-	for _, ev := range events {
-		rows = append(rows, db.CursorUsageEvent{
-			OccurredAt:       ev.Timestamp.UTC().Format(time.RFC3339Nano),
-			Model:            ev.Model,
-			Kind:             ev.Kind,
-			InputTokens:      ev.TokenUsage.InputTokens,
-			OutputTokens:     ev.TokenUsage.OutputTokens,
-			CacheWriteTokens: ev.TokenUsage.CacheWriteTokens,
-			CacheReadTokens:  ev.TokenUsage.CacheReadTokens,
-			Charged:          ev.Charged,
-			CursorTokenFee:   ev.CursorTokenFee,
-			UserID:           ev.UserID,
-			UserEmail:        ev.UserEmail,
-			IsHeadless:       ev.IsHeadless,
-		})
-	}
-	if err := database.InsertCursorUsageEvents(rows); err != nil {
 		return err
 	}
 
 	fmt.Fprintf(os.Stdout,
 		"Fetched %d Cursor usage events into the archive\n",
-		len(rows),
+		fetched,
 	)
 	return nil
 }
