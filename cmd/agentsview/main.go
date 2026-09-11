@@ -482,7 +482,11 @@ func runServe(cfg config.Config, opts serveOptions) {
 		pricingRefreshRunner = engine
 	}
 	seedPricing(database, pricingRefreshRunner)
-	poller.Start(ctx, pricingRefreshJob(database, pricingRefreshRunner))
+	scheduler := poller.Start(ctx, pricingRefreshJob(database, pricingRefreshRunner))
+	defer func() {
+		stop()
+		scheduler.Wait()
+	}()
 
 	rtOpts := serveRuntimeOptions{
 		Mode:           "serve",
