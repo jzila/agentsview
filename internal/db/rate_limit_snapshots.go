@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -13,35 +14,47 @@ import (
 )
 
 // RateLimitSnapshot is one rate-limit window observed for a vendor at a
-// point in time: today, always a Codex token_count event's rate_limits
-// payload, alongside the plan type and credit balance reported at the
-// same instant. The table is vendor-keyed from the start so a future
-// vendor can add rows without a schema change: Vendor distinguishes
-// them, and fields a given vendor never populates (AccountID,
-// AccountLabel, ScopeLabel, Details for Codex) simply stay empty on that
-// vendor's rows.
+// point in time: a Codex token_count event's rate_limits payload, or a
+// Claude Code oauth/usage poll (internal/claude.Job). The table is
+// vendor-keyed from the start (see docs/agents/storage.md): Vendor
+// distinguishes rows, and fields a given vendor never populates
+// (AccountID, AccountLabel, ScopeLabel, Severity, Details for Codex;
+// SessionID, Machine, LimitID, ObservationKey for Claude) simply stay
+// empty on that vendor's rows.
 //
 // A window's identity is (Vendor, Machine, AccountID, LimitID,
 // WindowKind); PlanType and LimitName are display labels, not part of
-// it. See docs/agents/storage.md for the full rationale, including why
-// Codex rows carry no AccountID.
+// it. Codex rollouts carry no stable per-account identifier (verified
+// against ~/.codex/sessions rollouts: no account id, user id, email, or
+// org field appears in session_meta or token_count payloads; see
+// docs/internal/session-format-sources.md), so AccountID/AccountLabel
+// stay empty for Codex rows. Claude snapshots key AccountID off
+// claude.Identity.AccountKey() -- the oauthAccount accountUuid plus
+// organizationUuid read from ~/.claude.json -- since a rate-limit window
+// belongs to a seat within an organization: accountUuid alone stays the
+// same across every org a user is a member of, and logging into a
+// different org changes only organizationUuid/organizationName, so
+// accountUuid by itself would collapse both orgs into one
+// LatestRateLimitSnapshots group. Claude rows leave SessionID and
+// Machine empty, since the poller is not tied to one parsed session or
+// host.
 type RateLimitSnapshot struct {
 	ID int64
 
-	// Vendor is "codex" today. Defaults to "codex" on write for
+	// Vendor is "codex" or "claude". Defaults to "codex" on write for
 	// backward compatibility with callers that predate this field.
 	Vendor string
 
 	SessionID string // Codex only; empty when the source session has been deleted
 	Machine   string // Codex only
 
-	AccountID    string // reserved for a future account-keyed vendor; always "" for Codex
-	AccountLabel string // reserved for a future account-keyed vendor; always "" for Codex
+	AccountID    string // Claude: claude.Identity.AccountKey() (accountUuid + organizationUuid). Empty for Codex.
+	AccountLabel string // Claude: organizationName or emailAddress. Empty for Codex.
 
 	LimitID    string // Codex only
 	LimitName  string
 	PlanType   string
-	WindowKind string // Codex: "primary" or "secondary"
+	WindowKind string // Codex: "primary"/"secondary". Claude: "session", "weekly", or "<kind>:<scope label>" -- see docs/agents/storage.md.
 
 	UsedPercent float64
 	// WindowMinutes is 0 both for a window Codex reported with no
@@ -49,7 +62,8 @@ type RateLimitSnapshot struct {
 	// in principle, a genuine zero-minute window -- the latter never
 	// occurs in practice, so 0 doubles as "unknown" without a nullable
 	// column; the API layer treats it that way (see
-	// service.RateLimitWindow.WindowMinutes). Codex only.
+	// service.RateLimitWindow.WindowMinutes). Claude always populates
+	// this at write time (see internal/claude, CanonicalWindowMinutes).
 	WindowMinutes int
 	// ResetsAt is unix seconds, or nil when the vendor did not report a
 	// reset time for this window. Kept nullable rather than flattened to
@@ -63,38 +77,48 @@ type RateLimitSnapshot struct {
 
 	RateLimitReachedType string // Codex only
 
-	// ScopeLabel and Details are reserved for a future vendor whose
-	// rate-limit source reports a scoped or free-form extra shape (see
-	// docs/agents/storage.md); always "" for Codex.
+	// ScopeLabel, Severity, and Details are Claude-only, sourced from one
+	// entry in the oauth/usage response's top-level `limits` array.
+	// ScopeLabel is the scope's model display name, else its model id,
+	// else its surface (empty for an account-wide entry). Severity is
+	// the server-reported severity string (e.g. "normal"). Details is a
+	// free-form JSON object carrying whatever else that source needs
+	// (is_active, the raw scope object, which decode path produced the
+	// row, or -- for the extra_usage_monthly window -- the monetary
+	// limit and currency); empty string when nothing extra applies. See
+	// docs/agents/storage.md. Always "" for Codex.
 	ScopeLabel string
+	Severity   string
 	Details    string
 
 	ObservedAt string // RFC3339Nano
-	// Ordinal is the source token_count event's stable per-file position
-	// (see parser.ParsedRateLimitSnapshot.Ordinal); folded into DedupKey
-	// and ObservationKey so two events sharing an ObservedAt second stay
-	// distinct. Codex only; always 0 for a vendor without per-event
-	// ordinals.
+	// Ordinal is the source Codex token_count event's stable per-file
+	// position (see parser.ParsedRateLimitSnapshot.Ordinal), folded into
+	// DedupKey and ObservationKey so two events sharing an ObservedAt
+	// second stay distinct. Always 0 for Claude, which is polled rather
+	// than parsed and so has no per-event ordinal to assign.
 	Ordinal  int
 	DedupKey string
 
 	// ObservationKey identifies the single source observation a row
 	// came from (e.g. one Codex token_count event's rate_limits
 	// payload), shared across the up-to-two window rows (primary,
-	// secondary) that observation produced. Computed once from
-	// SessionID+ObservedAt at insert time and stored independently of
-	// the nullable SessionID column, so it keeps sibling windows
-	// grouped together for LatestRateLimitSnapshots even after the
-	// source session is deleted or excluded from a resync -- unlike
-	// SessionID itself, which is exactly what goes away in that case.
+	// secondary) that observation produces. Computed once from
+	// SessionID+ObservedAt+LimitID+PlanType at insert time and stored
+	// independently of the nullable SessionID column, so it keeps
+	// sibling windows grouped together for LatestRateLimitSnapshots
+	// even after the source session is deleted or excluded from a
+	// resync -- unlike SessionID itself, which is exactly what goes
+	// away in that case. Empty for Claude rows, which carry no
+	// SessionID.
 	ObservationKey string
 }
 
 // RateLimitFilter selects rate-limit snapshots by vendor, account, and
 // (Codex-only) machine.
 type RateLimitFilter struct {
-	// Vendor narrows to one vendor ("codex" today); empty matches every
-	// vendor the table holds.
+	// Vendor narrows to one or more vendors ("codex" or "claude",
+	// comma-separated); empty matches every vendor the table holds.
 	Vendor    string
 	AccountID string
 	Machine   string
@@ -139,13 +163,21 @@ type RateLimitHistoryFilter struct {
 // value compares with "=" so the query plan can still use an equality
 // index lookup, and two or more values compare with "IN". An empty filter
 // returns no clause at all.
+//
+// The comparison only ever constrains Codex rows: Claude snapshots
+// always carry an empty machine (the poller is not tied to one host),
+// so applying a machine filter unconditionally hid every Claude card
+// whenever any machine was selected, even though the API documents
+// machine filtering as Codex-only (roborev finding). "vendor = 'claude'"
+// short-circuits the OR before the machine comparison ever runs for
+// those rows.
 func rateLimitMachineClause(machine string) (string, []any) {
 	if machine == "" {
 		return "", nil
 	}
 	vals := strings.Split(machine, ",")
 	if len(vals) == 1 {
-		return " AND machine = ?", []any{vals[0]}
+		return " AND (vendor = 'claude' OR machine = ?)", []any{vals[0]}
 	}
 	placeholders := make([]string, len(vals))
 	args := make([]any, len(vals))
@@ -153,7 +185,7 @@ func rateLimitMachineClause(machine string) (string, []any) {
 		placeholders[i] = "?"
 		args[i] = v
 	}
-	return " AND machine IN (" + strings.Join(placeholders, ",") + ")", args
+	return " AND (vendor = 'claude' OR machine IN (" + strings.Join(placeholders, ",") + "))", args
 }
 
 // rateLimitVendorClause returns a SQL fragment (starting with " AND")
@@ -181,9 +213,13 @@ func rateLimitVendorClause(vendor string) (string, []any) {
 // rateLimitEffectiveVendor resolves the vendor restriction a filter's
 // Vendor and Agent fields together imply: an explicit Vendor takes
 // precedence; otherwise Agent's comma-separated selection is applied
-// directly, since an agent slug (e.g. "codex") and a rate-limit vendor
-// name are the same value domain (see RateLimitAgentMatchesVendor).
-// Empty when neither is set, matching every vendor the table holds.
+// directly, since an agent slug (e.g. "codex", "claude") and a
+// rate-limit vendor name are the same value domain (see
+// RateLimitAgentMatchesVendor). Empty when neither is set, matching
+// every vendor the table holds. A selection naming neither known vendor
+// (e.g. "gemini") resolves to a vendor clause that matches no stored
+// row, which is the same "no rows" outcome as an explicit empty-set
+// filter, without needing a separate early-return path.
 func rateLimitEffectiveVendor(vendor, agent string) string {
 	if vendor != "" {
 		return vendor
@@ -221,15 +257,12 @@ func normalizeRateLimitBoundary(s string) (string, error) {
 
 // RateLimitAgentMatchesVendor reports whether agent -- a comma-separated
 // agent selection such as sessions.filters.agent, or "" for no filter --
-// includes vendor. rate_limit_snapshots only ever holds Codex rows
-// today, so every current caller passes vendor "codex", but the check
-// itself does not hardcode that: an empty selection (no filter active)
-// matches everything, and any non-empty selection must name vendor
-// somewhere in the list; a selection of one or more other agents that
-// omits vendor (e.g. "claude") matches nothing. A naive exact-equality
-// check here would wrongly hide a vendor's rate-limit cards whenever
-// more than one agent is selected together with it (e.g.
-// "codex,claude").
+// includes vendor. An empty selection (no filter active) matches
+// everything, and any non-empty selection must name vendor somewhere in
+// the list; a selection of one or more other agents that omits vendor
+// (e.g. "claude") matches nothing. A naive exact-equality check here
+// would wrongly hide a vendor's rate-limit cards whenever more than one
+// agent is selected together with it (e.g. "codex,claude").
 func RateLimitAgentMatchesVendor(agent, vendor string) bool {
 	if agent == "" {
 		return true
@@ -237,22 +270,65 @@ func RateLimitAgentMatchesVendor(agent, vendor string) bool {
 	return slices.Contains(strings.Split(agent, ","), vendor)
 }
 
+// rateLimitObservedAtMinuteBucket truncates observedAt (RFC3339Nano) to
+// the minute in UTC, for RateLimitSnapshotDedupKey's session-less-vendor
+// path. Falls back to the raw string on a parse failure (should not
+// happen: observed_at is always written by RFC3339Nano formatting), so a
+// malformed value still participates in the key rather than panicking.
+func rateLimitObservedAtMinuteBucket(observedAt string) string {
+	t, err := time.Parse(time.RFC3339Nano, observedAt)
+	if err != nil {
+		return observedAt
+	}
+	return t.UTC().Truncate(time.Minute).Format(time.RFC3339)
+}
+
 // RateLimitSnapshotDedupKey returns the stable identity for one snapshot
-// row: the source session id, its observed timestamp, the limit id, the
-// window kind, and the source event's ordinal. Re-parsing a Codex
-// rollout (full or incremental) produces the same key for the same
-// event, so the unique dedup_key index makes re-parsing an upsert
-// instead of duplicating rows (see insertRateLimitSnapshotsTx). Vendor does not
-// participate in the key: session id is already vendor-specific, so
-// adding vendor here would be redundant. Ordinal disambiguates two
-// distinct token_count events that happen to share an ObservedAt
-// second, which SessionID+ObservedAt+LimitID+WindowKind alone cannot:
-// without it, the second event's row would collide with -- and be
-// silently dropped in favor of -- the first's.
+// row. Re-parsing a Codex rollout (full or incremental) or repeating a
+// Claude poll produces the same key for the same observation, so the
+// unique dedup_key index makes a repeat write an upsert instead of
+// duplicating rows (see insertRateLimitSnapshotsTx).
+//
+// A row with a session id (Codex today) keys on SessionID, ObservedAt,
+// LimitID, WindowKind, and Ordinal: session id is already vendor- and
+// event-specific, so Vendor, Machine, AccountID, and PlanType would be
+// redundant, and Ordinal (the source token_count event's 0-based file
+// position) disambiguates two distinct events that happen to share an
+// ObservedAt second -- without it, the second event's row would collide
+// with, and be silently dropped in favor of, the first's.
+//
+// A session-less row (Claude, polled rather than parsed, so it has no
+// session id or per-event ordinal to key on) instead keys on Vendor,
+// Machine, AccountID, LimitID, PlanType, WindowKind, ResetsAt, and
+// ObservedAt bucketed to the minute (rateLimitObservedAtMinuteBucket): a
+// window's full identity, since nothing else distinguishes two of an
+// account's windows observed close together. Bucketing to the minute
+// means two polls of the same underlying window state within one
+// minute collapse onto one row; a poll in the next minute, or reporting
+// a different resets_at, still gets its own row. Because the dedup key
+// excludes UsedPercent, insertRateLimitSnapshotsTx follows every
+// duplicate hit with an UPDATE refreshing the row's mutable fields, so a
+// climbing used_percent within the same bucket is never left stale.
 func RateLimitSnapshotDedupKey(s RateLimitSnapshot) string {
+	if s.SessionID != "" {
+		sum := sha256.Sum256([]byte(fmt.Sprintf(
+			"%s|%s|%s|%s|%d",
+			s.SessionID, s.ObservedAt, s.LimitID, s.WindowKind, s.Ordinal,
+		)))
+		return hex.EncodeToString(sum[:])
+	}
+	vendor := s.Vendor
+	if vendor == "" {
+		vendor = "codex"
+	}
+	var resetsAt int64
+	if s.ResetsAt != nil {
+		resetsAt = *s.ResetsAt
+	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s|%s|%s|%s|%d",
-		s.SessionID, s.ObservedAt, s.LimitID, s.WindowKind, s.Ordinal,
+		"%s|%s|%s|%s|%s|%s|%d|%s",
+		vendor, s.Machine, s.AccountID, s.LimitID, s.PlanType, s.WindowKind,
+		resetsAt, rateLimitObservedAtMinuteBucket(s.ObservedAt),
 	)))
 	return hex.EncodeToString(sum[:])
 }
@@ -261,10 +337,10 @@ func RateLimitSnapshotDedupKey(s RateLimitSnapshot) string {
 // ignores duplicates with the same dedup key. It never deletes existing
 // rows, so it is safe to call from both a full parse (which sees the
 // whole transcript on every run) and an incremental parse (which only
-// sees the appended tail): both converge on the same set of rows. A
-// write that instead replaces a session's prior content wholesale --
-// most notably an authoritative reparse superseding a fallback marked
-// parser.DataVersionNeedsRetry -- must use
+// sees the appended tail), or a repeated Claude poll: all converge on
+// the same set of rows. A write that instead replaces a session's prior
+// content wholesale -- most notably an authoritative reparse superseding
+// a fallback marked parser.DataVersionNeedsRetry -- must use
 // InsertRateLimitSnapshotsReplacingSession instead, or that fallback's
 // rows outlive the parse that superseded them.
 func (db *DB) InsertRateLimitSnapshots(
@@ -366,35 +442,48 @@ func deleteRateLimitSnapshotsForSessionTx(
 }
 
 // insertRateLimitSnapshotsTx inserts every row in snapshots that carries
-// its required identity fields (limit_id, window_kind, observed_at),
-// skipping -- rather than failing the whole batch, and with it the
-// session write this batch is usually part of -- any single entry
-// missing one. A source-format quirk or parser bug that produces one
+// its required identity fields, skipping -- rather than failing the
+// whole batch, and with it the session write this batch is usually part
+// of -- any single entry missing one. limit_id is required only for a
+// Codex row: Claude's identity has no limit_id concept at all and always
+// leaves it empty. A source-format quirk or parser bug that produces one
 // malformed rate_limits observation must not take down every other
 // snapshot in the same batch, nor the session ingestion it rode in on;
 // see docs/agents/storage.md.
 //
 // A dedup_key collision against an existing row whose session_id is NULL
-// (a resync copy for a session absent from the destination -- see
-// CopyRateLimitSnapshotsFrom) reattaches that row to the incoming
-// session_id and refreshes its other fields instead of being ignored:
-// dedup_key is preserved unchanged by that copy, so the session's later
-// reappearance (a fresh parse producing the identical dedup_key) would
-// otherwise collide with, and be silently discarded in favor of, the
-// stale detached row forever. A collision against a row that already
-// has a non-NULL session_id is unaffected and still a no-op, matching
-// plain INSERT OR IGNORE.
+// reattaches that row to the incoming session_id and refreshes the
+// fields the INSERT's own ON CONFLICT ... DO UPDATE covers, instead of
+// being ignored: a resync copy preserves dedup_key unchanged for a row
+// whose session was not restored (see CopyRateLimitSnapshotsFrom), so
+// that session's later reappearance (a fresh parse reproducing the
+// identical dedup_key) would otherwise collide with, and lose to, the
+// stale detached row forever. That reattachment is deliberately also
+// conditioned on the incoming row itself carrying a session_id
+// (excluded.session_id IS NOT NULL): a Claude row never carries one, so
+// without this a repeat Claude poll would also take this branch, but
+// unlike the unconditional pass below it applies no julianday guard at
+// all, letting an out-of-order or stale replay silently regress
+// used_percent and the rest of its SET list back to an older value
+// (roborev finding). The condition leaves reattachment firing only for
+// a genuine "session reappeared" event and leaves every Claude
+// duplicate hit, and the fields this UPDATE does not cover regardless
+// (observed_at, severity, ...), to the unconditional, correctly-guarded
+// pass below. A collision against a row that already has a session
+// attached (the common Codex case: re-parsing an unchanged event) is a
+// no-op either way.
 func insertRateLimitSnapshotsTx(
 	ctx context.Context, tx transactionQueries, snapshots []RateLimitSnapshot,
 ) error {
+	prepared := make([]RateLimitSnapshot, 0, len(snapshots))
 	for _, snap := range snapshots {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		if snap.Vendor == "" {
 			snap.Vendor = "codex"
 		}
-		if snap.LimitID == "" || snap.WindowKind == "" || snap.ObservedAt == "" {
+		if snap.WindowKind == "" || snap.ObservedAt == "" {
+			continue
+		}
+		if snap.Vendor == "codex" && snap.LimitID == "" {
 			continue
 		}
 		if snap.DedupKey == "" {
@@ -402,6 +491,13 @@ func insertRateLimitSnapshotsTx(
 		}
 		if snap.ObservationKey == "" {
 			snap.ObservationKey = RateLimitObservationKey(snap)
+		}
+		prepared = append(prepared, snap)
+	}
+
+	for _, snap := range prepared {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 
 		var sessionID any
@@ -427,9 +523,9 @@ func insertRateLimitSnapshotsTx(
 				limit_id, limit_name, plan_type, window_kind,
 				used_percent, window_minutes, resets_at,
 				credits_has, credits_unlimited, credits_balance,
-				rate_limit_reached_type, scope_label, details,
+				rate_limit_reached_type, scope_label, severity, details,
 				observed_at, ordinal, dedup_key, observation_key
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(dedup_key) WHERE dedup_key != '' DO UPDATE SET
 				session_id = excluded.session_id,
 				machine = excluded.machine,
@@ -447,7 +543,8 @@ func insertRateLimitSnapshotsTx(
 				scope_label = excluded.scope_label,
 				details = excluded.details,
 				observation_key = excluded.observation_key
-			WHERE rate_limit_snapshots.session_id IS NULL`,
+			WHERE rate_limit_snapshots.session_id IS NULL
+				AND excluded.session_id IS NOT NULL`,
 			snap.Vendor, sessionID, SanitizeUTF8(snap.Machine),
 			SanitizeUTF8(snap.AccountID), SanitizeUTF8(snap.AccountLabel),
 			SanitizeUTF8(snap.LimitID), SanitizeUTF8(snap.LimitName),
@@ -455,10 +552,63 @@ func insertRateLimitSnapshotsTx(
 			snap.UsedPercent, snap.WindowMinutes, resetsAt,
 			creditsHas, creditsUnlimited, SanitizeUTF8(snap.CreditsBalance),
 			SanitizeUTF8(snap.RateLimitReachedType), SanitizeUTF8(snap.ScopeLabel),
-			SanitizeUTF8(snap.Details), snap.ObservedAt, snap.Ordinal, snap.DedupKey,
-			snap.ObservationKey,
+			SanitizeUTF8(snap.Severity), SanitizeUTF8(snap.Details),
+			snap.ObservedAt, snap.Ordinal, snap.DedupKey, snap.ObservationKey,
 		); err != nil {
 			return fmt.Errorf("inserting rate limit snapshot: %w", err)
+		}
+	}
+
+	// A row can dedup away even though it was genuinely re-observed,
+	// simply because none of its dedup-key fields (which exclude
+	// used_percent) changed within the same minute bucket as before --
+	// e.g. a Claude poll reports the same session/weekly windows with
+	// the same resets_at as the last poll this minute, but usage climbed
+	// from 90% to 100%; nothing about the row's identity moved, but its
+	// value did. The INSERT above only refreshes a duplicate hit's
+	// fields when its existing session_id is NULL, and does not cover
+	// observed_at or severity at all (see its own doc comment), so this
+	// pass runs unconditionally for every prepared row -- including one
+	// this same call just inserted a moment ago, for which it is a
+	// harmless no-op rewrite of identical values -- rather than trying
+	// to detect which rows were freshly inserted, refreshing the
+	// existing row's mutable fields to this call's incoming values,
+	// guarded by julianday comparison so a replay of an older
+	// observation (a resync, or an out-of-order batch) can never
+	// regress a row past a newer one already stored under the same
+	// dedup key.
+	for _, snap := range prepared {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var resetsAt any
+		if snap.ResetsAt != nil {
+			resetsAt = *snap.ResetsAt
+		}
+		creditsHas := 0
+		if snap.CreditsHas {
+			creditsHas = 1
+		}
+		creditsUnlimited := 0
+		if snap.CreditsUnlimited {
+			creditsUnlimited = 1
+		}
+		observationKey := RateLimitObservationKey(snap)
+		if _, err := tx.Exec(`
+			UPDATE rate_limit_snapshots SET
+				used_percent = ?, window_minutes = ?, resets_at = ?,
+				credits_has = ?, credits_unlimited = ?, credits_balance = ?,
+				rate_limit_reached_type = ?, scope_label = ?, severity = ?, details = ?,
+				limit_name = ?, plan_type = ?, observed_at = ?, observation_key = ?
+			WHERE dedup_key = ? AND julianday(?) >= julianday(observed_at)`,
+			snap.UsedPercent, snap.WindowMinutes, resetsAt,
+			creditsHas, creditsUnlimited, SanitizeUTF8(snap.CreditsBalance),
+			SanitizeUTF8(snap.RateLimitReachedType), SanitizeUTF8(snap.ScopeLabel),
+			SanitizeUTF8(snap.Severity), SanitizeUTF8(snap.Details),
+			SanitizeUTF8(snap.LimitName), SanitizeUTF8(snap.PlanType),
+			snap.ObservedAt, observationKey, snap.DedupKey, snap.ObservedAt,
+		); err != nil {
+			return fmt.Errorf("refreshing deduped rate limit snapshot: %w", err)
 		}
 	}
 	return nil
@@ -477,9 +627,9 @@ func insertRateLimitSnapshotsTx(
 // RateLimitSnapshotDedupKey: two distinct token_count events at the same
 // SessionID+ObservedAt+LimitID+PlanType would otherwise share one
 // observation_key, merging their sibling windows into a single bucket
-// for LatestRateLimitSnapshots. Empty when SessionID is empty (no vendor
-// writes rows that way today); callers fall back to a per-row key in
-// that case.
+// for LatestRateLimitSnapshots. Empty when SessionID is empty (Claude
+// rows carry no SessionID); callers fall back to a per-row key in that
+// case.
 func RateLimitObservationKey(s RateLimitSnapshot) string {
 	if s.SessionID == "" {
 		return ""
@@ -495,8 +645,8 @@ const rateLimitSnapshotColumns = `
 	limit_id, limit_name, plan_type, window_kind,
 	used_percent, window_minutes, resets_at,
 	credits_has, credits_unlimited, credits_balance,
-	rate_limit_reached_type, scope_label, details, observed_at, ordinal,
-	dedup_key, observation_key`
+	rate_limit_reached_type, scope_label, severity, details,
+	observed_at, ordinal, dedup_key, observation_key`
 
 func scanRateLimitSnapshot(row interface{ Scan(...any) error }) (RateLimitSnapshot, error) {
 	var s RateLimitSnapshot
@@ -508,7 +658,7 @@ func scanRateLimitSnapshot(row interface{ Scan(...any) error }) (RateLimitSnapsh
 		&s.LimitID, &s.LimitName, &s.PlanType, &s.WindowKind,
 		&s.UsedPercent, &s.WindowMinutes, &resetsAt,
 		&creditsHas, &creditsUnlimited, &s.CreditsBalance,
-		&s.RateLimitReachedType, &s.ScopeLabel, &s.Details,
+		&s.RateLimitReachedType, &s.ScopeLabel, &s.Severity, &s.Details,
 		&s.ObservedAt, &s.Ordinal, &s.DedupKey, &s.ObservationKey,
 	); err != nil {
 		return RateLimitSnapshot{}, err
@@ -550,69 +700,155 @@ func (db *DB) hasRateLimitSnapshotsTable() bool {
 	return exists
 }
 
+// isMissingRateLimitSnapshotsColumnErr reports whether err is a SQLite
+// "no such column" failure against rate_limit_snapshots.
+// hasRateLimitSnapshotsTable only tolerates an archive that predates the
+// table entirely; severity (Claude-only) is not part of every release's
+// base schema, so an archive that already has the table but has never
+// been opened writably since severity was added can still lack it.
+// LatestRateLimitSnapshots and RateLimitSnapshotHistory treat that the
+// same way as a missing table: an empty result rather than an error, so
+// a read-only viewer of a not-yet-migrated archive degrades gracefully
+// instead of failing outright.
+func isMissingRateLimitSnapshotsColumnErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such column")
+}
+
+// rateLimitSnapshotDisabled reports whether s is explicitly marked
+// disabled in its details JSON. internal/claude.Job writes such a row
+// to retire a Claude window that resolves its own latest observation
+// independently of any other Claude window (see
+// rateLimitBucketWindowKindExpr), where nothing else would ever
+// supersede a stale row on its own: an extra_usage_monthly window once
+// the account turns the feature off or stops reporting it, and any
+// other Claude window once a poll's `limits` array no longer reports it
+// (see claude.Job.retireStaleClaudeWindows). RateLimitSnapshotHistory
+// does not call this -- a chart covering the disable/retirement event
+// should still show the transition, not silently truncate it.
+func rateLimitSnapshotDisabled(s RateLimitSnapshot) bool {
+	if s.Details == "" {
+		return false
+	}
+	var parsed struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.Unmarshal([]byte(s.Details), &parsed); err != nil {
+		return false
+	}
+	return parsed.Enabled != nil && !*parsed.Enabled
+}
+
 // rateLimitBucketKey identifies one LatestRateLimitSnapshots grouping
 // bucket.
 type rateLimitBucketKey struct {
-	vendor, machine, accountID, limitID string
+	vendor, machine, accountID, limitID, bucketWindowKind string
 }
 
+// rateLimitBucketWindowKindExpr is the SQL expression that folds
+// window_kind into the bucket key only for Claude rows, matched by every
+// query below that groups or seeks rate_limit_snapshots buckets. Codex's
+// window kinds (primary/secondary) are two granularities of one payload
+// that arrive and vanish together, so ranking them independently would
+// let a window that stops being reported (e.g. a session moving from
+// primary+secondary to primary-only) keep surfacing its last-known row
+// forever, since no newer row for that window_kind ever arrives to
+// supersede it (roborev finding on kata ce4t) -- a constant ” folds
+// them into one bucket, preserving that grouping. Claude's window kinds
+// (session, weekly, the scoped/extra_usage windows) are independently
+// observed facts about one account instead, and Claude's limit_id is
+// always empty, so excluding window_kind from a Claude bucket would
+// collapse every one of an account's windows into a single bucket
+// showing only whichever was most recently polled.
+const rateLimitBucketWindowKindExpr = "CASE WHEN vendor = 'claude' THEN window_kind ELSE '' END"
+
 // rateLimitBuckets discovers every distinct (vendor, machine, account_id,
-// limit_id) bucket matching whereClause/whereArgs by repeatedly seeking
-// the next key greater than the last one found, via the row-value
-// comparison SQLite compiles into an index seek against
+// limit_id, bucket_window_kind) bucket matching whereClause/whereArgs by
+// repeatedly seeking the next key greater than the last one found, via
+// the row-value comparison SQLite compiles into an index seek against
 // idx_rate_limit_snapshots_bucket_observed. A single "GROUP BY ...
 // MAX(observed_at)" query over the same index costs one comparison per
 // matching row -- confirmed via EXPLAIN QUERY PLAN to be a full covering
 // index scan, not a seek -- which dominates LatestRateLimitSnapshots' cost
 // at scale even though the number of distinct buckets a real archive
-// holds stays small (one per machine/limit family) regardless of how much
-// history has accumulated. This walk instead costs one O(log n) seek per
-// bucket.
+// holds stays small (one per machine/limit family, or per Claude window)
+// regardless of how much history has accumulated. This walk instead
+// costs one O(log n) seek per bucket.
 func (db *DB) rateLimitBuckets(
 	ctx context.Context, whereClause string, whereArgs []any,
 ) ([]rateLimitBucketKey, error) {
 	var out []rateLimitBucketKey
-	var vendor, machine, accountID, limitID string
+	var vendor, machine, accountID, limitID, bucketWindowKind string
 	for {
-		args := append([]any{vendor, machine, accountID, limitID}, whereArgs...)
+		args := append([]any{vendor, machine, accountID, limitID, bucketWindowKind}, whereArgs...)
 		row := db.getReader().QueryRowContext(ctx, `
-			SELECT vendor, machine, account_id, limit_id
+			SELECT vendor, machine, account_id, limit_id, `+rateLimitBucketWindowKindExpr+`
 			FROM rate_limit_snapshots
-			WHERE (vendor, machine, account_id, limit_id) > (?, ?, ?, ?)`+whereClause+`
-			ORDER BY vendor, machine, account_id, limit_id
+			WHERE (vendor, machine, account_id, limit_id, `+rateLimitBucketWindowKindExpr+`) > (?, ?, ?, ?, ?)`+whereClause+`
+			ORDER BY vendor, machine, account_id, limit_id, `+rateLimitBucketWindowKindExpr+`
 			LIMIT 1`,
 			args...,
 		)
 		var next rateLimitBucketKey
-		if err := row.Scan(&next.vendor, &next.machine, &next.accountID, &next.limitID); err != nil {
+		if err := row.Scan(
+			&next.vendor, &next.machine, &next.accountID, &next.limitID, &next.bucketWindowKind,
+		); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				break
 			}
 			return nil, fmt.Errorf("discovering rate limit buckets: %w", err)
 		}
 		out = append(out, next)
-		vendor, machine, accountID, limitID = next.vendor, next.machine, next.accountID, next.limitID
+		vendor, machine, accountID, limitID, bucketWindowKind =
+			next.vendor, next.machine, next.accountID, next.limitID, next.bucketWindowKind
 	}
 	return out, nil
 }
 
 // LatestRateLimitSnapshots returns the most recently observed row per
-// (vendor, machine, account_id, limit_id, window_kind) group, matching f.
-// "Latest" is resolved per (vendor, machine, account_id, limit_id) bucket
-// -- one level above window_kind -- with plan_type and limit_name each
-// independently backfilled from the latest observation that reported them
-// non-empty; see docs/agents/storage.md for the rationale (why plan_type
-// is not part of the bucket, why a window that stops being reported must
-// still be superseded, and the observation_key tie-break for two sessions
-// reporting at the same instant). "Most recently observed" is decided by
-// julianday(observed_at); see normalizeRateLimitBoundary's doc comment
-// for why a raw text comparison is not safe. Buckets are discovered with
-// rateLimitBuckets, then each bucket's winning row and its plan_type/
-// limit_name labels are resolved with one small indexed query per bucket,
-// so cost stays close to the number of buckets rather than the number of
-// rows. An archive opened read-only from before this table existed
-// returns an empty result instead of a "no such table" error (see
-// hasRateLimitSnapshotsTable).
+// (vendor, machine, account_id, limit_id) bucket -- and, for Claude
+// rows only, per window_kind within that bucket too (see
+// rateLimitBucketWindowKindExpr) -- matching f. plan_type and limit_name
+// are resolved independently as the latest non-empty value ever observed
+// for the (vendor, machine, account_id, limit_id) limit rather than
+// taken from the winning observation, since Codex reports both as labels
+// that can flip to empty on a later observation without that observation
+// being a meaningful "unset" (kata k5bm), and deliberately not scoped to
+// window_kind too: a primary-only observation supplying a new label,
+// followed by a primary+secondary observation that omits it, would
+// otherwise leave secondary showing a stale or blank label while primary
+// shows the new one. "Most recently observed" is decided by
+// julianday(observed_at), not a raw text comparison: see
+// normalizeRateLimitBoundary's doc comment for why. Buckets are
+// discovered with rateLimitBuckets, then each bucket's winning row and
+// its plan_type/limit_name labels are resolved with one small indexed
+// query per bucket, so cost stays close to the number of buckets rather
+// than the number of rows.
+//
+// The winner query matches on obs_key, not observed_at alone: two
+// different sessions on the same machine and account can legitimately
+// report the same limit at the exact same instant (Codex's rate limit is
+// account-wide), so it also matches on observation_key -- a value
+// computed once at insert time (see RateLimitObservationKey) and stored
+// independently of the nullable session_id column, so it keeps sibling
+// windows grouped correctly even after a source session is deleted or
+// excluded from a resync, unlike a key derived from session_id at query
+// time. An empty observation_key (Claude rows, which carry no
+// session_id) falls back to a synthetic 'row:<id>' key unique to that
+// one row.
+//
+// A row explicitly marked disabled in its details JSON (see
+// rateLimitSnapshotDisabled) is excluded from the result: Claude writes
+// such a row to retire a window that would otherwise never be
+// superseded on its own (extra_usage_monthly once a feature turns off,
+// or any window that stops appearing in a `limits` poll).
+// RateLimitSnapshotHistory does not apply this filter, so a chart
+// covering the retirement event still shows the transition.
+//
+// An archive opened read-only from before this table existed returns an
+// empty result instead of a "no such table" error (see
+// hasRateLimitSnapshotsTable), and one predating a later column (e.g.
+// severity) an empty result instead of a "no such column" error (see
+// isMissingRateLimitSnapshotsColumnErr).
 func (db *DB) LatestRateLimitSnapshots(
 	ctx context.Context, f RateLimitFilter,
 ) ([]RateLimitSnapshot, error) {
@@ -639,24 +875,25 @@ func (db *DB) LatestRateLimitSnapshots(
 
 	buckets, err := db.rateLimitBuckets(ctx, whereClause, whereArgs)
 	if err != nil {
+		if isMissingRateLimitSnapshotsColumnErr(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 
 	var out []RateLimitSnapshot
 	for _, bk := range buckets {
-		// winner resolves the single winning observation for this bucket:
-		// the newest observed_at, and among rows tied on that timestamp
-		// (two sessions can legitimately report the same account-wide
-		// limit at the same instant) the highest id, matching
-		// RateLimitObservationKey's tie-break. That key, not session_id
-		// (nullable once a session is deleted), is what the final query
-		// matches sibling windows on. limit_name/plan_type are resolved
-		// the same way, independently, as the latest non-empty value ever
-		// observed for the bucket.
-		bkArgs := []any{bk.vendor, bk.machine, bk.accountID, bk.limitID}
+		// bkArgs (with bucketWindowKind) binds the winner CTE and the
+		// final WHERE clause, both scoped to this exact bucket including
+		// its window_kind dimension. bkArgsNoWindowKind (without it)
+		// binds the plan_type/limit_name label subqueries, which are
+		// deliberately scoped by limit_id alone -- see
+		// idx_rate_limit_snapshots_bucket_jd_plan_type's schema comment.
+		bkArgs := []any{bk.vendor, bk.machine, bk.accountID, bk.limitID, bk.bucketWindowKind}
+		bkArgsNoWindowKind := []any{bk.vendor, bk.machine, bk.accountID, bk.limitID}
 		args := append([]any{}, bkArgs...)
-		args = append(args, bkArgs...)
-		args = append(args, bkArgs...)
+		args = append(args, bkArgsNoWindowKind...)
+		args = append(args, bkArgsNoWindowKind...)
 		args = append(args, bkArgs...)
 		rows, err := db.getReader().QueryContext(ctx, `
 			WITH winner AS (
@@ -664,6 +901,7 @@ func (db *DB) LatestRateLimitSnapshots(
 					CASE WHEN observation_key != '' THEN observation_key ELSE 'row:' || id END AS obs_key
 				FROM rate_limit_snapshots
 				WHERE vendor = ? AND machine = ? AND account_id = ? AND limit_id = ?
+					AND `+rateLimitBucketWindowKindExpr+` = ?
 				ORDER BY julianday(observed_at) DESC, id DESC
 				LIMIT 1
 			)
@@ -686,15 +924,19 @@ func (db *DB) LatestRateLimitSnapshots(
 				r.window_kind,
 				r.used_percent, r.window_minutes, r.resets_at,
 				r.credits_has, r.credits_unlimited, r.credits_balance,
-				r.rate_limit_reached_type, r.scope_label, r.details,
+				r.rate_limit_reached_type, r.scope_label, r.severity, r.details,
 				r.observed_at, r.ordinal, r.dedup_key, r.observation_key
 			FROM rate_limit_snapshots r, winner w
 			WHERE r.vendor = ? AND r.machine = ? AND r.account_id = ? AND r.limit_id = ?
+				AND `+rateLimitBucketWindowKindExpr+` = ?
 				AND r.observed_at = w.observed_at
 				AND (CASE WHEN r.observation_key != '' THEN r.observation_key ELSE 'row:' || r.id END) = w.obs_key`,
 			args...,
 		)
 		if err != nil {
+			if isMissingRateLimitSnapshotsColumnErr(err) {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("querying latest rate limit snapshot: %w", err)
 		}
 		for rows.Next() {
@@ -702,6 +944,9 @@ func (db *DB) LatestRateLimitSnapshots(
 			if err != nil {
 				_ = rows.Close()
 				return nil, fmt.Errorf("scanning rate limit snapshot: %w", err)
+			}
+			if rateLimitSnapshotDisabled(s) {
+				continue
 			}
 			out = append(out, s)
 		}
@@ -713,8 +958,8 @@ func (db *DB) LatestRateLimitSnapshots(
 	}
 
 	// rateLimitBuckets already yields buckets ordered by (vendor, machine,
-	// account_id, limit_id); re-key to the documented (vendor, account_id,
-	// machine, limit_id, window_kind) result order.
+	// account_id, limit_id, bucket_window_kind); re-key to the documented
+	// (vendor, account_id, machine, limit_id, window_kind) result order.
 	slices.SortFunc(out, func(a, b RateLimitSnapshot) int {
 		if c := strings.Compare(a.Vendor, b.Vendor); c != 0 {
 			return c
@@ -752,8 +997,10 @@ const defaultRateLimitHistoryMaxPoints = 500
 // first. The series is ordered by julianday(observed_at), not a raw text
 // comparison; see normalizeRateLimitBoundary's doc comment for why. An
 // archive opened read-only from before this table existed returns an
-// empty result instead of a "no such table" error (see
-// hasRateLimitSnapshotsTable).
+// empty result instead of a "no such table" error, and one predating a
+// later column (e.g. severity) an empty result instead of a "no such
+// column" error (see hasRateLimitSnapshotsTable and
+// isMissingRateLimitSnapshotsColumnErr).
 func (db *DB) RateLimitSnapshotHistory(
 	ctx context.Context, f RateLimitHistoryFilter,
 ) ([]RateLimitSnapshot, error) {
@@ -840,6 +1087,9 @@ func (db *DB) RateLimitSnapshotHistory(
 		LIMIT ?`,
 		args...,
 	)
+	if isMissingRateLimitSnapshotsColumnErr(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("querying rate limit snapshot history: %w", err)
 	}
@@ -900,6 +1150,26 @@ func (db *DB) CopyRateLimitSnapshotsFrom(sourcePath string, retainedSessionIDs [
 	}
 	if !hasTable {
 		return nil
+	}
+
+	// severity is a later column (see schemaColumnMigrations): a source
+	// archive built before it existed has the table but not the column,
+	// so the copy selects a literal '' in its place for copied rows
+	// rather than failing the whole copy over "no such column". The
+	// destination always has the column -- applySchemaColumnMigrations
+	// runs on every writable open, before any copy can reach here -- so
+	// only the source (SELECT) side of the INSERT varies; the
+	// destination (INSERT INTO) column list always names it.
+	var hasSeverity bool
+	if err := conn.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM pragma_table_info('rate_limit_snapshots', 'old_rate_limits_db')
+		WHERE name = 'severity'
+	)`).Scan(&hasSeverity); err != nil {
+		return fmt.Errorf("checking source rate limit snapshots columns: %w", err)
+	}
+	severitySelect := "''"
+	if hasSeverity {
+		severitySelect = "o.severity"
 	}
 
 	// _retained_rate_limit_session_ids holds retainedSessionIDs, the same
@@ -965,7 +1235,7 @@ func (db *DB) CopyRateLimitSnapshotsFrom(sourcePath string, retainedSessionIDs [
 			limit_id, limit_name, plan_type, window_kind,
 			used_percent, window_minutes, resets_at,
 			credits_has, credits_unlimited, credits_balance,
-			rate_limit_reached_type, scope_label, details,
+			rate_limit_reached_type, scope_label, severity, details,
 			observed_at, ordinal, dedup_key, observation_key
 		)
 		SELECT o.vendor,
@@ -979,7 +1249,7 @@ func (db *DB) CopyRateLimitSnapshotsFrom(sourcePath string, retainedSessionIDs [
 			o.limit_id, o.limit_name, o.plan_type, o.window_kind,
 			o.used_percent, o.window_minutes, o.resets_at,
 			o.credits_has, o.credits_unlimited, o.credits_balance,
-			o.rate_limit_reached_type, o.scope_label, o.details,
+			o.rate_limit_reached_type, o.scope_label, `+severitySelect+`, o.details,
 			o.observed_at, o.ordinal, o.dedup_key, o.observation_key
 		FROM old_rate_limits_db.rate_limit_snapshots o
 		WHERE o.session_id IS NULL

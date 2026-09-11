@@ -191,6 +191,11 @@ type Server struct {
 	// route registered but returning an empty list, e.g. when [poller]
 	// is disabled by config.
 	pollerStatus func() []poller.Status
+	// pollerTrigger, when set, backs the Claude accounts settings
+	// panel's "Test" button (and any other on-demand poller trigger) by
+	// calling internal/poller.Scheduler.TriggerNow. Nil when [poller] is
+	// disabled by config or no Scheduler was constructed.
+	pollerTrigger func(name string) error
 }
 
 type insightGenerationOptionsContextKey struct{}
@@ -484,6 +489,13 @@ func WithIdleTracker(t *IdleTracker) Option {
 // Status method).
 func WithPollerStatus(fn func() []poller.Status) Option {
 	return func(s *Server) { s.pollerStatus = fn }
+}
+
+// WithPollerTrigger wires the internal/poller.Scheduler on-demand trigger
+// (fn is typically the Scheduler's own TriggerNow method), backing the
+// Claude accounts settings panel's "Test" button.
+func WithPollerTrigger(fn func(name string) error) Option {
+	return func(s *Server) { s.pollerTrigger = fn }
 }
 
 // WithSessionMutationNotifier registers fn to run after a route changes a

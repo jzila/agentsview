@@ -7,4 +7,5 @@ export type GetApiV1RateLimitsHistoryVendor =
 
 export const GetApiV1RateLimitsHistoryVendor = {
   codex: "codex",
+  claude: "claude",
 } as const;

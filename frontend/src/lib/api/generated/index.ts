@@ -1,6 +1,7 @@
 export * as ActivityService from "./activity/activity.ts";
 export * as AnalyticsService from "./analytics/analytics.ts";
 export * as AssetsService from "./assets/assets.ts";
+export * as ClaudeService from "./claude/claude.ts";
 export * as ConfigService from "./config/config.ts";
 export * as DataService from "./data/data.ts";
 export * as EmbeddingsService from "./embeddings/embeddings.ts";

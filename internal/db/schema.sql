@@ -311,25 +311,27 @@ CREATE INDEX IF NOT EXISTS idx_cursor_usage_events_occurred
 CREATE INDEX IF NOT EXISTS idx_cursor_usage_events_model
     ON cursor_usage_events(model);
 
--- Rate-limit snapshots. Each row is one rate-limit window (5h "primary",
--- weekly "secondary", ...) observed for a vendor at a point in time --
--- today, always a Codex token_count event's rate_limits payload,
--- alongside the plan type and credit balance reported at the same
--- instant. SQLite-only, following the same vendor-data precedent as
--- cursor_usage_events above and the Codex incremental-import tables
--- documented in docs/agents/storage.md: it is not part of the
+-- Rate-limit snapshots. Each row is one rate-limit window (Codex 5h
+-- "primary", weekly "secondary", ...; Claude "session", "weekly", and
+-- scoped/extra-usage windows -- see docs/agents/storage.md) observed from
+-- a vendor-specific source (a Codex token_count event's rate_limits
+-- payload, or a Claude Code oauth/usage poll), alongside plan type /
+-- credit or account context. SQLite-only, following the same vendor-data
+-- precedent as cursor_usage_events above and the Codex incremental-import
+-- tables documented in docs/agents/storage.md: it is not part of the
 -- SQLite/PostgreSQL/DuckDB parity contract.
 --
--- `vendor` is NOT NULL from the start (always 'codex' today) so a future
--- vendor's rows never need a backfill or a migration to add the column;
--- `account_id`/`account_label`/`scope_label`/`details` are reserved the
--- same way and always '' for Codex.
+-- `vendor` distinguishes "codex" and "claude" rows.
 --
 -- Codex rollouts carry no stable per-account identifier (no account id,
 -- user id, email, or org field appears in session_meta or token_count
 -- payloads as of 2026-09 -- see docs/internal/session-format-sources.md),
 -- so a Codex snapshot's identity is (machine, limit_id, plan_type,
--- window_kind) rather than an account.
+-- window_kind) rather than an account; account_id/account_label stay
+-- empty for Codex rows. Claude snapshots key account_id off
+-- claude.Identity.AccountKey() (accountUuid plus organizationUuid, read
+-- from ~/.claude.json) and leave session_id and machine empty, since the
+-- poller is not tied to one parsed session or host.
 CREATE TABLE IF NOT EXISTS rate_limit_snapshots (
     id INTEGER PRIMARY KEY,
     vendor TEXT NOT NULL DEFAULT 'codex',
@@ -348,7 +350,18 @@ CREATE TABLE IF NOT EXISTS rate_limit_snapshots (
     credits_unlimited INTEGER NOT NULL DEFAULT 0,
     credits_balance TEXT NOT NULL DEFAULT '',
     rate_limit_reached_type TEXT NOT NULL DEFAULT '',
+    -- scope_label, severity, and details are Claude-only, sourced from
+    -- one entry in the oauth/usage response's top-level `limits` array:
+    -- scope_label is the model/surface a scoped entry narrows to (e.g.
+    -- "Fable" for window_kind "weekly_scoped:Fable"), empty for an
+    -- account-wide entry; severity is the server-reported severity
+    -- string (e.g. "normal"). details is a free-form JSON object with
+    -- whatever else that source needs to reconstruct display or pricing
+    -- (is_active, the raw scope object, which decode path produced the
+    -- row, or -- for the extra_usage_monthly window -- the monetary
+    -- limit and currency). See docs/agents/storage.md.
     scope_label TEXT NOT NULL DEFAULT '',
+    severity TEXT NOT NULL DEFAULT '',
     details TEXT NOT NULL DEFAULT '',
     observed_at TEXT NOT NULL,
     -- ordinal is the source token_count event's stable per-file position
@@ -361,10 +374,11 @@ CREATE TABLE IF NOT EXISTS rate_limit_snapshots (
     -- observation_key identifies the single source observation a row
     -- came from (shared by the up-to-two window rows -- primary,
     -- secondary -- one Codex rate_limits payload produces). Computed
-    -- from session_id+observed_at at insert time and stored
-    -- independently of the nullable session_id column, so sibling
-    -- windows stay grouped for LatestRateLimitSnapshots even after the
-    -- source session is deleted or excluded from a resync.
+    -- from session_id+observed_at+limit_id+plan_type at insert time and
+    -- stored independently of the nullable session_id column, so
+    -- sibling windows stay grouped for LatestRateLimitSnapshots even
+    -- after the source session is deleted or excluded from a resync.
+    -- Empty for Claude rows, which carry no session_id.
     observation_key TEXT NOT NULL DEFAULT ''
 );
 
@@ -378,13 +392,23 @@ CREATE INDEX IF NOT EXISTS idx_rate_limit_snapshots_session
 -- Backs LatestRateLimitSnapshots' bucket-max lookup and its per-bucket
 -- plan_type/limit_name correlated subqueries, and RateLimitSnapshotHistory's
 -- range scan: all three key on this same (vendor, machine, account_id,
--- limit_id) bucket with observed_at trailing, so SQLite can seek a bucket's
--- newest row directly off the index instead of ranking the whole filtered
--- set with a window function. Applied on every writable open (this file
--- re-runs in full; see execSchemaScriptLocked), so an existing archive
--- picks it up without a separate migration.
+-- limit_id, bucket_window_kind) bucket with observed_at trailing, so
+-- SQLite can seek a bucket's newest row directly off the index instead of
+-- ranking the whole filtered set with a window function. The trailing
+-- expression is CASE WHEN vendor = 'claude' THEN window_kind ELSE '' END
+-- (rateLimitBucketWindowKindExpr in Go): Codex's window kinds are two
+-- granularities of one payload that arrive and vanish together, so they
+-- stay folded into one bucket, while Claude's window kinds are
+-- independently observed facts about one account and so each gets its
+-- own bucket. Applied on every writable open (this file re-runs in full;
+-- see execSchemaScriptLocked), so an existing archive picks it up
+-- without a separate migration.
 CREATE INDEX IF NOT EXISTS idx_rate_limit_snapshots_bucket_observed
-    ON rate_limit_snapshots(vendor, machine, account_id, limit_id, observed_at);
+    ON rate_limit_snapshots(
+        vendor, machine, account_id, limit_id,
+        (CASE WHEN vendor = 'claude' THEN window_kind ELSE '' END),
+        observed_at
+    );
 -- julianday(observed_at), not the raw column, because every "most recent
 -- observation" lookup orders by julianday(observed_at) -- raw RFC3339Nano
 -- text does not sort chronologically once two timestamps differ in
@@ -393,7 +417,11 @@ CREATE INDEX IF NOT EXISTS idx_rate_limit_snapshots_bucket_observed
 -- the whole bucket for that ORDER BY ... LIMIT 1, even though the bucket
 -- itself is reached by an index seek on the leading columns.
 CREATE INDEX IF NOT EXISTS idx_rate_limit_snapshots_bucket_jd
-    ON rate_limit_snapshots(vendor, machine, account_id, limit_id, julianday(observed_at), id);
+    ON rate_limit_snapshots(
+        vendor, machine, account_id, limit_id,
+        (CASE WHEN vendor = 'claude' THEN window_kind ELSE '' END),
+        julianday(observed_at), id
+    );
 -- Partial indexes backing the "latest non-empty plan_type/limit_name"
 -- lookups: without a partial index whose WHERE clause matches the
 -- subquery's own "plan_type != ''" (or "limit_name != ''") filter,
@@ -402,12 +430,16 @@ CREATE INDEX IF NOT EXISTS idx_rate_limit_snapshots_bucket_jd
 -- the whole bucket, in the worst case a label that is empty on every
 -- observation ever recorded for it -- before concluding there is no
 -- match. These let that search land only on rows that could qualify.
+-- plan_type/limit_name resolution is deliberately scoped by limit_id
+-- alone, not bucket_window_kind, so these two indexes key on the plain
+-- (vendor, machine, account_id, limit_id) prefix.
 CREATE INDEX IF NOT EXISTS idx_rate_limit_snapshots_bucket_jd_plan_type
     ON rate_limit_snapshots(vendor, machine, account_id, limit_id, julianday(observed_at), id)
     WHERE plan_type != '';
 CREATE INDEX IF NOT EXISTS idx_rate_limit_snapshots_bucket_jd_limit_name
     ON rate_limit_snapshots(vendor, machine, account_id, limit_id, julianday(observed_at), id)
     WHERE limit_name != '';
+
 
 -- Tool calls table
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -1530,6 +1562,13 @@ CREATE TABLE IF NOT EXISTS poller_status (
     last_error           TEXT NOT NULL DEFAULT '',
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     next_run             TEXT NOT NULL DEFAULT '',
+    -- retry_after_until is next_run's value again, but only when next_run
+    -- was set from an explicit *poller.RetryAfterError rather than
+    -- ordinary backoff or a scheduled interval; empty otherwise. Restored
+    -- on Scheduler.Start alongside the rest of Status so a TriggerNow call
+    -- made shortly after a daemon restart still cannot repeat a request
+    -- an upstream 429 explicitly asked to wait out (roborev finding).
+    retry_after_until    TEXT NOT NULL DEFAULT '',
     updated_at           TEXT NOT NULL DEFAULT (
         strftime('%Y-%m-%dT%H:%M:%fZ','now')
     )

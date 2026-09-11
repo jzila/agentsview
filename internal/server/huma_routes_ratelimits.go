@@ -15,14 +15,13 @@ func (s *Server) registerRateLimitRoutes() {
 
 // RateLimitFilterInput is the shared vendor/account/machine filter for
 // both rate-limits endpoints. The table is SQLite-only (see
-// docs/agents/storage.md) and Codex-only today; Agent takes the same
-// comma-separated selection as the shared session filters, and a
-// selection that omits the resolved vendor (Vendor, or "codex" when
-// unset) matches nothing.
+// docs/agents/storage.md); Agent takes the same comma-separated selection
+// as the shared session filters, and a selection that omits the resolved
+// vendor (Vendor, or "codex" when unset) matches nothing.
 type RateLimitFilterInput struct {
-	Vendor    string `query:"vendor" enum:"codex" doc:"Filter by vendor"`
-	AccountID string `query:"account_id" doc:"Filter by account id; scopes vendors that have accounts and never excludes an account-less vendor's rows (Codex today)"`
-	Machine   string `query:"machine" doc:"Filter by machine (comma-separated)"`
+	Vendor    string `query:"vendor" enum:"codex,claude" doc:"Filter by vendor"`
+	AccountID string `query:"account_id" doc:"Filter by account id (Claude's oauthAccount accountUuid + organizationUuid, one per org a user is logged into); scopes vendors that have accounts and never excludes an account-less vendor's rows (Codex today)"`
+	Machine   string `query:"machine" doc:"Filter by machine (Codex only, comma-separated)"`
 	// Agent is accepted for backward compatibility with the original
 	// Codex-only filter name; it behaves like Vendor when Vendor is
 	// unset.
@@ -31,8 +30,8 @@ type RateLimitFilterInput struct {
 
 type rateLimitsHistoryInput struct {
 	RateLimitFilterInput
-	LimitID    string `query:"limit_id" doc:"Filter by limit id (e.g. codex)"`
-	WindowKind string `query:"window" enum:"primary,secondary" doc:"Filter by rate-limit window kind"`
+	LimitID    string `query:"limit_id" doc:"Filter by limit id (Codex only, e.g. codex)"`
+	WindowKind string `query:"window" doc:"Filter by rate-limit window kind (e.g. primary, secondary, session, weekly)"`
 	Since      string `query:"since" format:"date-time" doc:"Return snapshots observed at or after this RFC3339 timestamp"`
 	Until      string `query:"until" format:"date-time" doc:"Return snapshots observed strictly before this RFC3339 timestamp"`
 	// MaxPoints bounds the response size for a wide date range: a range

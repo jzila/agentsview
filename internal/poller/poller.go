@@ -77,6 +77,14 @@ type Status struct {
 	LastError           string    `json:"last_error,omitempty"`
 	ConsecutiveFailures int       `json:"consecutive_failures"`
 	NextRun             time.Time `json:"next_run,omitzero"`
+	// RetryAfterUntil is NextRun's value again, but only when NextRun was
+	// set from an explicit *RetryAfterError rather than ordinary backoff
+	// or a scheduled interval; the zero value otherwise. attempt checks
+	// it unconditionally, even for a TriggerNow call, so a manual trigger
+	// cannot repeat a request an upstream 429 explicitly asked to wait
+	// out -- restored across a restart along with the rest of Status,
+	// unlike a purely in-memory flag would be (roborev finding).
+	RetryAfterUntil time.Time `json:"retry_after_until,omitzero"`
 }
 
 // StatusStore persists Status across daemon restarts. internal/db
@@ -259,8 +267,11 @@ func (s *Scheduler) Start(ctx context.Context) {
 	}
 }
 
-// Wait blocks until every started job loop has returned. It is intended for
-// tests driving cancellation; production callers rely on ctx instead.
+// Wait blocks until every started job loop has returned. Canceling ctx
+// (passed to Start) tells each loop to stop; Wait is how a caller confirms
+// every loop actually has, so it is safe to close resources those loops
+// were using (the shared database, most notably) once it returns. Tests
+// driving cancellation use it the same way production shutdown does.
 func (s *Scheduler) Wait() {
 	s.wg.Wait()
 }
@@ -334,10 +345,27 @@ func (s *Scheduler) Status() []Status {
 // and started.
 var ErrUnknownJob = errors.New("poller: unknown job")
 
+// ErrRetryAfterPending is returned by TriggerNow (and, for the ignored
+// steady-tick path, by attempt) when the job's most recent attempt failed
+// with a *RetryAfterError carrying a positive wait that has not yet
+// elapsed. Remaining is how much longer the wait lasts. Unlike Cooldown,
+// which TriggerNow bypasses by design, a Retry-After wait comes from the
+// upstream service itself: running the attempt anyway would just repeat
+// the same request the 429 (or similar) explicitly asked to wait out.
+type ErrRetryAfterPending struct {
+	Remaining time.Duration
+}
+
+func (e *ErrRetryAfterPending) Error() string {
+	return fmt.Sprintf("still waiting out a retry-after delay (%s remaining)", e.Remaining.Round(time.Second))
+}
+
 // TriggerNow runs a registered job immediately, bypassing its Cooldown for
 // this one attempt, and waits for the attempt to finish. It returns the
-// job's error, if any. Calling TriggerNow for a name that hasn't started its
-// loop yet returns ErrUnknownJob.
+// job's error, if any, or ErrRetryAfterPending without running the job at
+// all if a prior attempt's Retry-After wait has not yet elapsed (see
+// ErrRetryAfterPending). Calling TriggerNow for a name that hasn't started
+// its loop yet returns ErrUnknownJob.
 //
 // TriggerNow observes the Scheduler's own context (set by Start) both when
 // enqueueing the request and while awaiting its response. The job's loop
@@ -440,7 +468,16 @@ func (s *Scheduler) initialDelay(rj *job) time.Duration {
 }
 
 // attempt runs one Job.Run call, unless Cooldown gates it, and updates and
-// persists Status. bypassCooldown is set only for a TriggerNow call.
+// persists Status. bypassCooldown is set only for a TriggerNow call, and
+// only bypasses Cooldown: a pending Retry-After wait (status.RetryAfterUntil)
+// is checked unconditionally, since it reflects an upstream-supplied wait
+// rather than this scheduler's own pacing, and running the attempt anyway
+// would just repeat the same request. Reading it from Status rather than a
+// separate in-memory field means it survives a daemon restart: Status is
+// restored from the StatusStore on Start (see loadStatuses/loadOneStatus)
+// before any job's loop can run an attempt, so a TriggerNow call made
+// shortly after a restart still cannot repeat a request an upstream 429
+// explicitly asked to wait out (roborev finding).
 func (s *Scheduler) attempt(ctx context.Context, rj *job, bypassCooldown bool) error {
 	now := s.clock.Now()
 
@@ -451,6 +488,10 @@ func (s *Scheduler) attempt(ctx context.Context, rj *job, bypassCooldown bool) e
 	// status was seeded (Register always sets it, but a status restored
 	// from a store keyed by name is authoritative too).
 	status.Name = rj.j.Name()
+
+	if !status.RetryAfterUntil.IsZero() && now.Before(status.RetryAfterUntil) {
+		return &ErrRetryAfterPending{Remaining: status.RetryAfterUntil.Sub(now)}
+	}
 
 	if !bypassCooldown && rj.opts.Cooldown > 0 && !status.LastAttempt.IsZero() {
 		elapsed := now.Sub(status.LastAttempt)
@@ -469,6 +510,7 @@ func (s *Scheduler) attempt(ctx context.Context, rj *job, bypassCooldown bool) e
 	runErr := s.runJob(ctx, rj)
 
 	now2 := s.clock.Now()
+	status.RetryAfterUntil = time.Time{}
 	if runErr == nil {
 		status.LastSuccess = now2
 		status.LastError = ""
@@ -477,8 +519,15 @@ func (s *Scheduler) attempt(ctx context.Context, rj *job, bypassCooldown bool) e
 	} else {
 		status.LastError = runErr.Error()
 		status.ConsecutiveFailures++
-		if retryAfter, ok := errors.AsType[*RetryAfterError](runErr); ok {
+		// A *RetryAfterError only overrides the schedule when its wait is
+		// positive: a 429 (or similar) with no usable Retry-After header
+		// parses to a zero duration (see claude.parseRetryAfter), and
+		// treating that as "retry immediately" would retry a failing
+		// request with no backoff at all, defeating the whole point of
+		// counting ConsecutiveFailures.
+		if retryAfter, ok := errors.AsType[*RetryAfterError](runErr); ok && retryAfter.RetryAfter > 0 {
 			status.NextRun = now2.Add(retryAfter.RetryAfter)
+			status.RetryAfterUntil = status.NextRun
 		} else {
 			delay := backoffDelay(rj.j.Interval(), status.ConsecutiveFailures)
 			status.NextRun = now2.Add(delay + s.jitter(rj.opts.Jitter))

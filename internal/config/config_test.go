@@ -552,6 +552,152 @@ func TestLoadMinimal_PreservesCursorAdminEnvOverFile(t *testing.T) {
 	assert.Equal(t, "env-user", cfg.CursorAdminUserID)
 }
 
+func TestLoadMinimal_ParsesClaudeAccountsTable(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"claude": map[string]any{
+			"accounts": map[string]any{
+				"personal": map[string]any{
+					"credentials":   "keychain",
+					"claude_config": "~/.claude.json",
+				},
+				"work": map[string]any{
+					"credentials":   "file:~/.claude-work/.credentials.json",
+					"claude_config": "~/.claude-work/.claude.json",
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	require.Len(t, cfg.Claude.Accounts, 2)
+	assert.Equal(t, "keychain", cfg.Claude.Accounts["personal"].Credentials)
+	assert.Equal(t, "~/.claude.json", cfg.Claude.Accounts["personal"].ClaudeConfig)
+	assert.Equal(t, "file:~/.claude-work/.credentials.json", cfg.Claude.Accounts["work"].Credentials)
+	assert.Equal(t, "~/.claude-work/.claude.json", cfg.Claude.Accounts["work"].ClaudeConfig)
+}
+
+func TestLoadEnv_SetsDefaultClaudeAccountFromEnv(t *testing.T) {
+	setupTestEnv(t)
+	t.Setenv("AGENTSVIEW_CLAUDE_ACCOUNT_CREDENTIALS", "env:CLAUDE_CODE_OAUTH_TOKEN")
+	t.Setenv("AGENTSVIEW_CLAUDE_ACCOUNT_CONFIG", "/tmp/claude-ci/.claude.json")
+
+	cfg, err := Default()
+	require.NoError(t, err)
+	cfg.loadEnv()
+
+	require.Contains(t, cfg.Claude.Accounts, "default")
+	assert.Equal(t, "env:CLAUDE_CODE_OAUTH_TOKEN", cfg.Claude.Accounts["default"].Credentials)
+	assert.Equal(t, "/tmp/claude-ci/.claude.json", cfg.Claude.Accounts["default"].ClaudeConfig)
+}
+
+// TestLoadMinimal_PreservesEnvDefaultClaudeAccountAlongsideNamedTOMLAccount
+// covers the roborev Medium finding on kata 9rs0 (filed as kata qs2f):
+// loadEnv() runs before the config.toml layer, so an unrelated named
+// [claude.accounts.NAME] entry in config.toml must not wipe out an
+// env-configured "default" account -- both must be present afterward.
+func TestLoadMinimal_PreservesEnvDefaultClaudeAccountAlongsideNamedTOMLAccount(t *testing.T) {
+	dir := setupTestEnv(t)
+	t.Setenv("AGENTSVIEW_CLAUDE_ACCOUNT_CREDENTIALS", "env:CLAUDE_CODE_OAUTH_TOKEN")
+	t.Setenv("AGENTSVIEW_CLAUDE_ACCOUNT_CONFIG", "/tmp/claude-ci/.claude.json")
+	writeConfig(t, dir, map[string]any{
+		"claude": map[string]any{
+			"accounts": map[string]any{
+				"work": map[string]any{
+					"credentials": "file:~/.claude-work/.credentials.json",
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	require.Len(t, cfg.Claude.Accounts, 2, "the env default and the named TOML account must both survive")
+	assert.Equal(t, "env:CLAUDE_CODE_OAUTH_TOKEN", cfg.Claude.Accounts["default"].Credentials)
+	assert.Equal(t, "/tmp/claude-ci/.claude.json", cfg.Claude.Accounts["default"].ClaudeConfig)
+	assert.Equal(t, "file:~/.claude-work/.credentials.json", cfg.Claude.Accounts["work"].Credentials)
+}
+
+// TestLoadMinimal_EnvDefaultClaudeAccountWinsOverSameNameTOMLEntry covers
+// the same finding's "preserving environment overrides for default"
+// requirement for the narrower case where config.toml also happens to
+// define [claude.accounts.default]: environment variables take
+// precedence over config.toml for every other field in this function,
+// and the same precedence must hold here.
+func TestLoadMinimal_EnvDefaultClaudeAccountWinsOverSameNameTOMLEntry(t *testing.T) {
+	dir := setupTestEnv(t)
+	t.Setenv("AGENTSVIEW_CLAUDE_ACCOUNT_CREDENTIALS", "env:CLAUDE_CODE_OAUTH_TOKEN")
+	writeConfig(t, dir, map[string]any{
+		"claude": map[string]any{
+			"accounts": map[string]any{
+				"default": map[string]any{
+					"credentials": "keychain",
+				},
+			},
+		},
+	})
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	require.Len(t, cfg.Claude.Accounts, 1)
+	assert.Equal(t, "env:CLAUDE_CODE_OAUTH_TOKEN", cfg.Claude.Accounts["default"].Credentials)
+}
+
+// TestLoadMinimal_MergesEnvAndTOMLClaudeAccountFields covers the roborev
+// Medium finding on kata j5md #2: setting only one of
+// AGENTSVIEW_CLAUDE_ACCOUNT_CREDENTIALS / AGENTSVIEW_CLAUDE_ACCOUNT_CONFIG
+// must not discard config.toml's value for the other field on the same
+// "default" account -- the two fields merge rather than one layer
+// winning wholesale.
+func TestLoadMinimal_MergesEnvAndTOMLClaudeAccountFields(t *testing.T) {
+	tests := []struct {
+		name             string
+		envVar           string
+		envValue         string
+		tomlField        string
+		tomlValue        string
+		wantCredentials  string
+		wantClaudeConfig string
+	}{
+		{
+			name: "env credentials merges with TOML claude_config", envVar: "AGENTSVIEW_CLAUDE_ACCOUNT_CREDENTIALS",
+			envValue: "env:CLAUDE_CODE_OAUTH_TOKEN", tomlField: "claude_config", tomlValue: "/home/ci/.claude.json",
+			wantCredentials: "env:CLAUDE_CODE_OAUTH_TOKEN", wantClaudeConfig: "/home/ci/.claude.json",
+		},
+		{
+			name: "env claude_config merges with TOML credentials", envVar: "AGENTSVIEW_CLAUDE_ACCOUNT_CONFIG",
+			envValue: "/tmp/claude-ci/.claude.json", tomlField: "credentials", tomlValue: "keychain",
+			wantCredentials: "keychain", wantClaudeConfig: "/tmp/claude-ci/.claude.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := setupTestEnv(t)
+			t.Setenv(tt.envVar, tt.envValue)
+			writeConfig(t, dir, map[string]any{
+				"claude": map[string]any{
+					"accounts": map[string]any{
+						"default": map[string]any{
+							tt.tomlField: tt.tomlValue,
+						},
+					},
+				},
+			})
+
+			cfg, err := LoadMinimal()
+			require.NoError(t, err)
+
+			require.Len(t, cfg.Claude.Accounts, 1)
+			assert.Equal(t, tt.wantCredentials, cfg.Claude.Accounts["default"].Credentials)
+			assert.Equal(t, tt.wantClaudeConfig, cfg.Claude.Accounts["default"].ClaudeConfig)
+		})
+	}
+}
+
 func TestLoadMinimal_PreservesAuthTokenEnvOverFile(t *testing.T) {
 	dir := setupTestEnv(t)
 	writeConfig(t, dir, map[string]any{

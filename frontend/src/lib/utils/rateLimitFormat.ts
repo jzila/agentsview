@@ -5,6 +5,8 @@
 // through the Paraglide message catalogues; the surrounding sentence
 // ("Resets in {value}") is.
 
+import { formatNumber } from "./format.js";
+
 const MINUTES_PER_HOUR = 60;
 const MINUTES_PER_DAY = MINUTES_PER_HOUR * 24;
 
@@ -63,4 +65,23 @@ export function formatResetCountdown(
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${mins}m`;
   return `${Math.max(mins, 1)}m`;
+}
+
+/**
+ * Formats a Codex credits balance for display: truncated toward zero (an
+ * account with 2674.0620860000 credits has 2,674 whole credits available,
+ * not 2,674.06 rounded up to 2,675) and rendered with locale-aware
+ * thousands grouping via the app's shared number formatter. The raw
+ * string is kept in stored snapshot details and shown in the caller's
+ * title/aria attribute for full precision; this function only produces
+ * the compact display text.
+ *
+ * Returns the raw string unchanged if it does not parse as a number, so
+ * an unexpected shape degrades to "show something" rather than "show
+ * nothing".
+ */
+export function formatCreditsBalance(raw: string): string {
+  const value = Number.parseFloat(raw);
+  if (!Number.isFinite(value)) return raw;
+  return formatNumber(Math.trunc(value));
 }

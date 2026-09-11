@@ -312,6 +312,77 @@ add an archived or maintained mirror without replacing the original identity.
   frontmatter or the local parse cache; local parsing retains frontmatter
   lookup. `TestHostedSkillInferenceKeepsNamesLexical` covers this boundary.
 
+- **Rate limits, oauth/usage endpoint (verified 2026-09-09/10 against the
+  Claude Code 2.1.266 bundle and a live account):** This is an
+  **unofficial, undocumented endpoint used by Claude Code itself**, not
+  a published Anthropic API; it may change or be removed without
+  notice. `internal/claude` polls it to populate the Usage page's
+  Claude rate-limit cards. **Evidence:** `no-public-source`
+  (reverse-engineered via `strings -a` against the published
+  `claude-code@2.1.266` bundle; no private or internal Anthropic source
+  was used).
+  - **Endpoint:** `GET https://api.anthropic.com/api/oauth/usage`.
+    **Headers:** `Authorization: Bearer <oauth access token>`,
+    `anthropic-beta: oauth-2025-04-20` (the same beta value Claude Code
+    attaches to every OAuth Bearer-authenticated first-party call, not
+    specific to this endpoint), `User-Agent: claude-code/<version>`,
+    `Content-Type: application/json`; no `anthropic-version` header.
+  - **Response shape:** the fixed buckets (`five_hour`, `seven_day`,
+    `seven_day_oauth_apps`, `seven_day_opus`, `seven_day_sonnet`,
+    `seven_day_overage_included`) are each independently nullable
+    `{utilization, resets_at}`. A top-level `limits` array is the
+    actual primary source for a model-scoped weekly cap: on the live
+    account checked, `seven_day_opus`/`seven_day_sonnet` were both
+    null, yet the account had one active model-scoped weekly limit
+    (`display_name` "Fable") reported only via `limits`, not under any
+    fixed key. Each `limits` entry carries `kind` (e.g. `"session"`,
+    `"weekly_all"`, `"weekly_scoped"`), `group` (`"session"`/`"weekly"`,
+    used to derive `window_minutes`), `percent`, `severity`,
+    `resets_at` (RFC3339 with offset, not unix seconds), `is_active`,
+    and `scope` (`null` for an account-wide entry, or
+    `{model: {id, display_name}, surface}` for a scoped one). See
+    `internal/claude/client_test.go`'s `realOauthUsageLimitsArrayFixture`
+    for a full example response. `internal/claude.Job` treats `limits`
+    as the primary source whenever non-empty, deriving `window_kind` as
+    `<kind>` or `<kind>:<scope label>`, and falls back to the fixed
+    buckets only when `limits` is empty or absent.
+  - **`extra_usage`/`spend`:** a separate, per-account monthly
+    usage-credit allowance. `extra_usage` carries `is_enabled` and
+    `utilization`; `spend.limit` carries the monetary limit
+    (`amount_minor`, `currency`, `exponent`). `internal/claude.Job`
+    persists this as its own `extra_usage_monthly` window whenever the
+    response carries an `extra_usage` object at all, using `spend.limit`
+    (not `extra_usage.monthly_limit`) for the monetary detail. The
+    response also carries several undocumented, code-named bucket keys
+    that come and go across polls (`seven_day_cowork`, `tangelo`,
+    `iguana_necktie`, and others observed, mostly null); these are
+    silently dropped by `encoding/json` and not persisted.
+  - **statusLine alternative:** Claude Code's own `statusLine` command
+    JSON carries a `rate_limits` object with only `five_hour`,
+    `seven_day`, and a gateway-only `spend_limit` -- never the
+    model/surface-scoped buckets. `agentsview claude statusline-sink`
+    reads this on stdin as a low-latency, network-free complement; the
+    oauth/usage poller remains the complete, required source.
+  - **Credentials:** macOS Keychain generic-password service
+    `"Claude Code-credentials"` (account = the login user), or
+    `~/.claude/.credentials.json` on Linux; both are
+    `{"claudeAiOauth": {"accessToken", "refreshToken", "expiresAt"
+    (unix milliseconds), "refreshTokenExpiresAt", "scopes",
+    "subscriptionType", "rateLimitTier"}}`. Claude Code refreshes its
+    own OAuth token in the background; `internal/claude` never attempts
+    a refresh and treats a 401 as "re-run `claude` to refresh
+    credentials" per `ErrUnauthorized`.
+
+- **Account identity, `~/.claude.json` `oauthAccount` (verified
+  2026-09-09 against a real, logged-in file, no network access):** the
+  top-level `oauthAccount` object carries `accountUuid`, `emailAddress`,
+  `organizationUuid`, `organizationName`, `organizationType`,
+  `seatTier`, `userRateLimitTier`, and `organizationRateLimitTier` --
+  every field `internal/claude.Identity` decodes was present verbatim
+  on a real account. `ReadIdentity` performs no network access; a file
+  with no `oauthAccount` key decodes to a zero `Identity` rather than
+  an error.
+
 ## OpenClaude (`openclaude`)
 
 - **Format:** OpenClaude JSONL with Claude-compatible message content and usage

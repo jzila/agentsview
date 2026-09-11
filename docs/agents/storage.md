@@ -78,112 +78,156 @@ result updates use the same projection as newly inserted messages.
 `rate_limit_snapshots` is a SQLite-only vendor-data table, in the same
 category as `cursor_usage_events` and the four Codex incremental-import
 tables above: it is out of scope for the SQLite/PostgreSQL/DuckDB parity
-rule below. It is vendor-keyed (`vendor`, `'codex'` today) from the start
-so a future vendor can add rows without a schema change or a migration:
-`account_id`, `account_label`, `scope_label`, and `details` are reserved
-for a vendor whose rate-limit source has that shape, and stay `''` on
-every Codex row -- verified against `~/.codex/sessions` rollouts: no
-account id, user id, email, or org field appears in `session_meta` or
-`token_count` payloads, so a Codex snapshot's identity omits an account
-entirely (see `docs/internal/session-format-sources.md`). An
-`account_id` filter scopes vendors that have
-accounts, so both `LatestRateLimitSnapshots` and
-`RateLimitSnapshotHistory` match a nonempty `account_id` against
-`(account_id = '' OR account_id = ?)` rather than a bare equality,
-letting an account-less vendor's rows (Codex today) pass through
-instead of being excluded by someone else's account filter.
+rule below. It stores one row per rate-limit window observation from either
+of two vendors, distinguished by a `vendor` column (`codex` or `claude`):
 
-It stores each `rate_limits` observation a Codex `token_count` event
-carries beside `info.last_token_usage` (one row per rate-limit window).
-It is written with an upsert against a unique `dedup_key` (source
-session id + observed timestamp + limit id + window kind + `ordinal`),
-never a delete-then-reinsert, so both a full parse (which sees the
-whole transcript every time) and an incremental parse (which only sees
-the appended tail) can write to it without duplicating or losing rows.
-A `dedup_key` collision against a row whose `session_id` is already
-NULL (a resync copy for a session absent from the destination -- see
-`CopyRateLimitSnapshotsFrom`) reattaches that row to the incoming
-session and refreshes its other fields instead of being ignored, since
-the copy preserves `dedup_key` unchanged and the session reappearing
-later (a fresh parse reproducing the identical key) would otherwise
-collide with, and lose to, the stale detached row forever. A collision
-against a row that already has a session attached is still a no-op.
-`ordinal` is the source `token_count` event's 0-based
-position among every `token_count` event in the rollout file, assigned
-by the parser (`ParsedRateLimitSnapshot.Ordinal`) and stable across a
-full parse, an incremental tail parse resuming from a cached or
-reseeded cursor, and any later re-parse of the same file: without it,
-two distinct `token_count` events landing on the same observed-at
-second would produce the same `dedup_key`, and the second event's row
-would be silently dropped by `INSERT OR IGNORE` instead of persisted.
-It also participates in `observation_key` for the same reason -- two
-such events would otherwise merge their sibling windows into one
-`LatestRateLimitSnapshots` bucket. A single malformed
-observation (e.g. one missing `limit_id`) is skipped rather than failing
-the whole write, so it cannot take down the rest of the batch or the
-session ingestion it rode in on. `session_id` is nullable (`ON DELETE SET
-NULL`) so a row survives its source session being deleted. `resets_at` is
-also nullable: Codex can report a window with no reset time, and that is
-kept distinct from a window that resets at the unix epoch all the way
-through the Go types and the API response (an absent field, not `0`), so
-the Usage page can tell "no known reset time" apart from "resets right
-now". A full resync copies existing rows into the replacement archive
-the same way model pricing is copied (`CopyRateLimitSnapshotsFrom`), but
-only after orphaned sessions are restored: `session_id` is a foreign
-key, and copying before restoration could violate it for a snapshot
-belonging to an orphaned session, aborting the whole copy. The copy also
-NULLs `session_id` for any row whose session does not exist in the
-destination even after restoration -- a session resync intentionally
-does not restore, such as one superseded by a reparse under a different
-id, or one excluded as parser-excluded -- rather than copying that id
-unchanged and violating the same foreign key; `dedup_key` is preserved
-from the source unchanged either way. The copy also skips any row whose
-session was rebuilt by the resync's own reparse rather than merely
-restored: it copies a row only when `session_id` is NULL, absent from
-the destination's `sessions` table, or one of the ids the orphan copy
-restored without reparsing, so a rebuilt session's superseded rows
-cannot resurrect on top of its fresh, current ones.
-`LatestRateLimitSnapshots` (the
-`/current` endpoint) resolves "latest" per (vendor, machine, account_id,
-limit_id) bucket -- one level above window_kind -- and returns every
-window belonging to that bucket's single newest observation. Ranking
-each window_kind independently instead would let a window that stops
-being reported (e.g. a session moving from primary+secondary to
-primary-only) keep surfacing its last-known row forever, since no newer
-row for that window_kind ever arrives to supersede it. `plan_type` is
-deliberately not part of this bucket, or of any other window identity in
-this codebase: Codex reports it as a label that can flip between
-`"pro"` and empty for the same window from one observation to the next,
-not a stable identity component, so partitioning on it would let a stale
-plan-keyed bucket coexist alongside the newest observation instead of
-being superseded by it, and (on the history/frontend side) would split
-one window's history across two chart series or silently drop half of
-it. `plan_type` and `limit_name` are instead resolved independently as
-the latest non-empty value ever observed for the bucket -- so a bucket
-whose newest observation happens to omit one or both labels still
-displays the last value seen for it rather than blanking the card --
-and are otherwise pure display labels carried on each row, never a
-grouping key. `RateLimitSnapshotHistory` still returns every row over
-time regardless of the current-snapshot grouping, and its query,
-downsampling, and frontend cache key never filter or key by `plan_type`
-either. A window's identity, for both the current-snapshot and history
-paths, is (vendor, machine, account_id, limit_id, window_kind) -- the
-same fields `RateLimitCardIdentity` on the frontend groups by. PostgreSQL
-and DuckDB implement the read-side
-`Store` methods as no-ops returning an empty result, so the Usage page's
-rate-limits section is simply hidden when either backend is the active
-read store. `LatestRateLimitSnapshots` and `RateLimitSnapshotHistory` both
-probe once (cached per `*DB`) whether `rate_limit_snapshots` exists and
-return an empty result instead of erroring when it does not, since
-`OpenReadOnly` tolerates an older, otherwise-compatible archive that
-predates the table. A write that replaces a session's messages wholesale
-(an authoritative reparse superseding a fallback parsed at
-`parser.DataVersionNeedsRetry`, or any other full delete-and-reinsert)
-must delete that session's `rate_limit_snapshots` rows in the same
-transaction before inserting the new set via
-`InsertRateLimitSnapshotsReplacingSession`, while a normal incremental
-parse keeps appending through `InsertRateLimitSnapshots` without
-deleting.
+- **Codex**: each `rate_limits` object a Codex `token_count` event carries
+  beside `info.last_token_usage` (one row per window). `session_id` is
+  nullable (`ON DELETE SET NULL`) so a row survives its source session
+  being deleted; `machine`, `limit_id`, and `plan_type` are Codex-specific
+  and stay empty for Claude rows.
+- **Claude**: each window a `internal/claude.Job` poll of the (unofficial)
+  `GET /api/oauth/usage` endpoint returns. `account_id` is
+  `claude.Identity.AccountKey()` -- the `oauthAccount` `accountUuid` plus
+  `organizationUuid` from `~/.claude.json` -- and `account_label` is
+  Claude-specific; both stay empty for Codex rows. `accountUuid` alone
+  stays constant across every org a user belongs to, so `AccountKey`
+  folds in `organizationUuid` too, giving each org its own
+  `LatestRateLimitSnapshots` group instead of letting one org's poll
+  overwrite another's cards; `session_id` and `machine` stay empty since
+  the poll is not tied to one parsed session or host.
+
+`resets_at` is nullable for both vendors (an absent field, not `0`), so a
+genuinely unknown reset time never displays as "resets right now".
+
+`window_kind` is free-form: Codex uses `primary`/`secondary`. Claude
+derives it from the oauth/usage response's top-level `limits` array --
+an account-wide entry's raw `kind` canonicalized to `session` or `weekly`,
+or `<canonical kind>:<scope identity>` for a model- or surface-scoped
+entry (e.g. `weekly_scoped:Fable`). Scope identity
+(`claude.LimitScope.Identity()`) combines model and surface only when
+both are populated; the separate display label
+(`claude.LimitScope.Label()`, stored in `scope_label`) drops the surface
+whenever a model is present. `window_kind` falls back to the fixed-bucket
+source (`session`/`weekly` for the 5-hour/7-day buckets, plus
+`seven_day_opus`, `seven_day_sonnet`, `seven_day_oauth_apps`,
+`seven_day_overage_included`) only when `limits` is empty or absent, and
+that fallback is one-way per account identity
+(`internal/claude.Job.sawLimitsArray`, keyed by
+`claude.Identity.AccountKey()` since one Job follows whichever org is
+currently logged in): once an identity's response has ever carried a
+non-empty `limits` array, a later empty one writes nothing rather than
+switching sources. `Job.retireStaleClaudeWindows` treats every poll that
+reports `limits` as a complete snapshot of the account's limits (except
+`extra_usage_monthly`) and writes a disabled row (`{"source": "limits",
+"enabled": false}`) for any current window absent from it, driven by
+`LatestRateLimitSnapshots` rather than in-memory state so it is correct
+across a restart. `Job.retireStaleExtraUsageWindow` does the analogous
+check for `extra_usage_monthly` whenever a poll's response carries no
+`extra_usage` object at all.
+
+The statusLine sink (`agentsview claude statusline-sink`) emits the same
+`session`/`weekly` identity for its own five_hour/seven_day observations,
+so a window observed by more than one ingestion path converges on one
+row. `extra_usage_monthly` is its own window, written on every poll once
+an account's response has ever carried an `extra_usage` object, enabled
+or not; `LatestRateLimitSnapshots` excludes a row `details` marks
+`"enabled": false` from current results, while `RateLimitSnapshotHistory`
+still returns it so a chart spanning the disable event shows the
+transition.
+
+`LatestRateLimitSnapshots`/`RateLimitSnapshotHistory` tolerate a
+`rate_limit_snapshots` table or column a later release added being
+absent (returning an empty result rather than erroring), matching
+`OpenReadOnly`'s general tolerance for an older, otherwise-compatible
+archive -- see `hasRateLimitSnapshotsTable` and
+`isMissingRateLimitSnapshotsColumnErr`.
+
+Cross-vendor label consistency ("Session limit"/"Weekly limit" in the
+UI) is achieved at the display layer: the frontend derives a window's
+title from `window_minutes` for both vendors (300 -> "Session limit",
+10080 -> "Weekly limit", any other length -> a generic "{duration}
+limit" label), with the scope/limit qualifier (Claude `scope_label`,
+Codex `limit_name`) shown as a badge next to it. Codex's stored
+`window_kind` stays `primary`/`secondary`.
+
+`scope_label`, `severity`, and `details` are Claude-only. `scope_label`
+is the scope's model display name, else its model id, else its surface;
+`severity` is the server-reported severity string; `details` is a
+free-form JSON object (the decode path that produced the row, the raw
+`scope` object, or -- for `extra_usage_monthly` -- the monetary limit
+and currency). These stay empty for Codex rows.
+
+Rows are written against a unique `dedup_key` (`db.RateLimitSnapshotDedupKey`),
+never a delete-then-reinsert. A row with a session id (Codex today) keys
+on `(session_id, observed_at, limit_id, window_kind, ordinal)`: session
+id is already vendor- and event-specific, so `ordinal` (the source
+`token_count` event's 0-based file position) is what disambiguates two
+events sharing an `observed_at` second. A session-less row (Claude,
+polled rather than parsed) instead keys on `(vendor, machine, account_id,
+limit_id, plan_type, window_kind, resets_at, observed_at bucketed to the
+minute)`, since it has no session id or per-event ordinal to key on;
+bucketing to the minute collapses repeat polls of unchanged state into
+one row. `plan_type` and `limit_name` participate in the dedup key but
+not in `LatestRateLimitSnapshots`' grouping, since they are labels that
+can flip between a real value and empty for the same window (resolved
+to the most recently observed non-empty value).
+
+The write is an upsert, not a plain `INSERT OR IGNORE`: a `dedup_key`
+collision against a row whose `session_id` is already NULL (a resync
+copy for a session absent from the destination, or -- always, since
+Claude rows never carry one -- a repeat Claude poll) reattaches that row
+to the incoming session (a no-op for Claude, which has none) and
+refreshes the fields `INSERT ... ON CONFLICT ... DO UPDATE` covers. A
+separate pass then unconditionally refreshes every row's remaining
+mutable fields (`observed_at`, `severity`, and anything else that
+statement's `SET` list omits), guarded by a `julianday` comparison so an
+out-of-order replay can never regress a row past a newer one already
+stored under the same key -- this is what keeps a Claude window's
+`used_percent` current on a poll whose other identity fields are
+unchanged within the same minute bucket. A collision against a row that
+already has a session attached (the common Codex case: re-parsing an
+unchanged event) is a no-op either way.
+
+An `account_id` filter (the `/current` and `/history` endpoints'
+`account_id` query parameter) scopes vendors that have accounts, so
+both `LatestRateLimitSnapshots` and `RateLimitSnapshotHistory` match a
+nonempty `account_id` against `(account_id = '' OR account_id = ?)`
+rather than a bare equality, letting an account-less vendor's rows
+(Codex today) pass through instead of being excluded.
+
+A full resync copies existing rows the same way model pricing is
+copied (`CopyRateLimitSnapshotsFrom`), after orphaned sessions are
+restored. It NULLs `session_id` for a row whose session does not exist
+in the destination even after restoration (superseded by a reparse
+under a different id, or excluded), preserving `dedup_key` unchanged,
+and skips a row whose session was instead rebuilt by the resync's own
+reparse (copied only when `session_id` is NULL, absent from the
+destination, or explicitly retained without reparse), so a rebuilt
+session's superseded rows cannot resurrect on top of its fresh ones.
+Claude rows never carry a `session_id`, so this only ever applies to
+Codex rows.
+
+`LatestRateLimitSnapshots` resolves "latest" per (vendor, machine,
+account_id, limit_id) bucket, excluding plan_type, and for Codex one
+level above window_kind too -- Codex's window kinds are two granularities
+of one payload that arrive and vanish together, while Claude's are
+independently observed facts about one account, so window_kind stays
+part of the bucket key only for `vendor = 'claude'` rows.
+`RateLimitSnapshotHistory` still returns every row over time regardless
+of this grouping, keyed by (vendor, machine, account_id, limit_id,
+window_kind) -- the same fields `RateLimitCardIdentity` on the frontend
+groups by.
+
+PostgreSQL and DuckDB implement the read-side `Store` methods as no-ops
+returning an empty result, so the Usage page's rate-limits section is
+simply hidden when either backend is the active read store. A write
+that replaces a session's messages wholesale (an authoritative reparse,
+or any other full delete-and-reinsert) deletes that session's
+`rate_limit_snapshots` rows in the same transaction before inserting the
+new set via `InsertRateLimitSnapshotsReplacingSession`, while a normal
+incremental parse and a repeated Claude poll keep appending through
+`InsertRateLimitSnapshots`.
 
 ## Archive Content Policy
 
@@ -409,13 +453,27 @@ to recover the text.
 
 `poller_status` is a SQLite-only table (schema.sql) holding one row per
 `internal/poller.Scheduler` job, keyed by the job's stable name (e.g.
-`pricing-refresh`, `cursor-usage`). It records `last_attempt`, `last_success`,
-`last_error`, `consecutive_failures`, and `next_run` so `agentsview doctor` and
-the `/api/v1/system/pollers` status endpoint can show a job's state across a
-daemon restart. It is machine-local scheduling bookkeeping, like
-`parser_checkpoints`, and is never mirrored to PostgreSQL or DuckDB. A missing
-row means the job has not attempted a run against this database yet, not an
-error.
+`pricing-refresh`, `cursor-usage`, `claude-usage:<name>`). It records
+`last_attempt`, `last_success`, `last_error`, `consecutive_failures`, and
+`next_run` so `agentsview doctor` and the `/api/v1/system/pollers` status
+endpoint can show a job's state across a daemon restart. It is machine-local
+scheduling bookkeeping, like `parser_checkpoints`, and is never mirrored to
+PostgreSQL or DuckDB. A missing row means the job has not attempted a run
+against this database yet, not an error.
+
+`retry_after_until` repeats `next_run`'s value, but only when `next_run`
+was set from an explicit `*poller.RetryAfterError` (the Claude job
+returns one on a 429) rather than ordinary backoff or a scheduled
+interval; empty otherwise. `Scheduler.attempt` checks it unconditionally
+before running a job, even for a TriggerNow call (the Claude accounts
+settings panel's Test button), and returns `poller.ErrRetryAfterPending`
+without running the job at all while it holds: TriggerNow bypasses
+`next_run`'s ordinary Cooldown by design, but not an upstream-supplied
+Retry-After wait, since retrying before it elapses would just repeat
+the same request. It is a `Status` field, restored from this table the
+same way `last_attempt`/`next_run` already are, so it survives a daemon
+restart. `CopyPollerStatusFrom` tolerates a source archive whose table
+predates this column via `pragma_table_info`.
 
 ## DuckDB Mirror
 

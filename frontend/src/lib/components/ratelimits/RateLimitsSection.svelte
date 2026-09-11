@@ -27,8 +27,7 @@
   const until = $derived(bounds.until);
 
   // Excluding an agent on the Usage page hides only that vendor's group,
-  // not the whole section, so another vendor's cards (once another
-  // vendor writes rows) would keep showing.
+  // not the whole section, so the other vendor's cards keep showing.
   const visibleVendorGroups = $derived(
     rateLimits.groupedByVendor.filter((group) => !usage.isAgentExcluded(group.vendor)),
   );
@@ -39,23 +38,29 @@
   // stable identity component, so keying on it would render a plan-type
   // flip as a new card instead of an update to the existing one.
   function snapshotKey(snapshot: (typeof rateLimits.current)[number]): string {
+    // planType is deliberately excluded: it is a label, not identity
+    // (see RateLimitCardIdentity), so it must not fragment one window's
+    // keyed loop entry into two as its resolved value changes across
+    // refreshes.
     return [
       snapshot.vendor,
       snapshot.accountId ?? "",
-      snapshot.machine,
-      snapshot.limitId,
+      snapshot.machine ?? "",
+      snapshot.limitId ?? "",
       snapshot.windowKind,
     ].join(" ");
   }
 
   function vendorLabel(vendor: string): string {
     // Every composed UI label -- including vendor names -- goes through
-    // the Paraglide message dictionaries so all locales stay in sync; the
-    // vendor identifier itself ("codex") is untranslated data used only
-    // to select the message key.
+    // the Paraglide message dictionaries so all six locales stay in
+    // sync (kata k5bm); the vendor identifier itself ("codex"/"claude")
+    // is untranslated data used only to select the message key.
     switch (vendor) {
       case "codex":
         return m.rate_limits_vendor_codex();
+      case "claude":
+        return m.rate_limits_vendor_claude();
       default:
         return vendor;
     }
@@ -82,9 +87,7 @@
     </div>
     {#each visibleVendorGroups as vendorGroup (vendorGroup.vendor)}
       <div class="vendor-group">
-        {#if visibleVendorGroups.length > 1}
-          <h3 class="vendor-title">{vendorLabel(vendorGroup.vendor)}</h3>
-        {/if}
+        <h3 class="vendor-title">{vendorLabel(vendorGroup.vendor)}</h3>
         {#each vendorGroup.accounts as accountGroup (accountGroup.key)}
           <div class="account-group">
             {#if accountGroup.accountLabel}

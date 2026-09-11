@@ -1676,25 +1676,133 @@ func TestParseCodexSession_TokenUsage(t *testing.T) {
 	})
 }
 
-// TestParseCodexSession_RateLimits_NullResetsAt pins that a null
-// resets_at/window_minutes parses as nil, not 0.
-func TestParseCodexSession_RateLimits_NullResetsAt(t *testing.T) {
-	content := testjsonl.JoinJSONL(
-		testjsonl.CodexSessionMetaJSON("rl-sess", "/tmp", "user", tsEarly),
-		testjsonl.CodexTurnContextJSON("gpt-5.4", tsEarlyS1),
-		testjsonl.CodexMsgJSON("user", "hello", tsEarlyS1),
-		testjsonl.CodexMsgJSON("assistant", "hi", tsEarlyS5),
-		testjsonl.CodexTokenCountWithRateLimitsJSON(
+func TestParseCodexSession_RateLimits(t *testing.T) {
+	build := func(tail string) string {
+		return testjsonl.JoinJSONL(
+			testjsonl.CodexSessionMetaJSON("rl-sess", "/tmp", "user", tsEarly),
+			testjsonl.CodexTurnContextJSON("gpt-5.4", tsEarlyS1),
+			testjsonl.CodexMsgJSON("user", "hello", tsEarlyS1),
+			testjsonl.CodexMsgJSON("assistant", "hi", tsEarlyS5),
+			tail,
+		)
+	}
+
+	t.Run("no rate_limits payload emits no snapshot", func(t *testing.T) {
+		content := build(testjsonl.CodexTokenCountJSON(tsEarlyS5, 10000, 500, 6000))
+		sess, _ := runCodexParserTest(t, "test.jsonl", content, false)
+		require.NotNil(t, sess)
+		assert.Empty(t, sess.RateLimitSnapshots)
+	})
+
+	t.Run("a single window populates one snapshot with the observed identity", func(t *testing.T) {
+		content := build(testjsonl.CodexTokenCountWithRateLimitsJSON(
+			tsEarlyS5, 10000, 500, 6000, "codex", "pro",
+			&testjsonl.CodexRateLimitWindow{
+				UsedPercent: 95.0, WindowMinutes: 10080, ResetsAt: 1789435448,
+			},
+			nil, "2714.1675630000",
+		))
+		sess, _ := runCodexParserTest(t, "test.jsonl", content, false)
+		require.NotNil(t, sess)
+		require.Len(t, sess.RateLimitSnapshots, 1)
+
+		snap := sess.RateLimitSnapshots[0]
+		assert.Equal(t, "codex:rl-sess", snap.SessionID)
+		assert.Equal(t, "local", snap.Machine)
+		assert.Equal(t, "primary", snap.WindowKind)
+		assert.InDelta(t, 95.0, snap.UsedPercent, 0.001)
+		require.NotNil(t, snap.ResetsAt)
+		assert.EqualValues(t, 1789435448, *snap.ResetsAt)
+		assert.True(t, snap.CreditsHas)
+		assert.Equal(t, "2714.1675630000", snap.CreditsBalance)
+		assert.Equal(t, tsEarlyS5, snap.ObservedAt.Format(time.RFC3339))
+	})
+
+	t.Run("both windows populate two snapshots sharing limit/plan/credits identity", func(t *testing.T) {
+		content := build(testjsonl.CodexTokenCountWithRateLimitsJSON(
+			tsEarlyS5, 10000, 500, 6000, "codex_bengalfox", "pro",
+			&testjsonl.CodexRateLimitWindow{
+				UsedPercent: 0, WindowMinutes: 300, ResetsAt: 1788907714,
+			},
+			&testjsonl.CodexRateLimitWindow{
+				UsedPercent: 0, WindowMinutes: 10080, ResetsAt: 1789494514,
+			},
+			"3234.3673990000",
+		))
+		sess, _ := runCodexParserTest(t, "test.jsonl", content, false)
+		require.NotNil(t, sess)
+		require.Len(t, sess.RateLimitSnapshots, 2)
+
+		primary, secondary := sess.RateLimitSnapshots[0], sess.RateLimitSnapshots[1]
+		assert.Equal(t, "primary", primary.WindowKind)
+		assert.Equal(t, "secondary", secondary.WindowKind)
+		assert.Equal(t, "codex_bengalfox", primary.LimitID)
+		assert.Equal(t, primary.LimitID, secondary.LimitID)
+		assert.Equal(t, primary.CreditsBalance, secondary.CreditsBalance)
+	})
+
+	// A null resets_at (independent of the window itself being present)
+	// must be preserved as nil, not flattened to 0.
+	t.Run("a null resets_at is preserved as nil, not flattened to zero", func(t *testing.T) {
+		content := build(testjsonl.CodexTokenCountWithRateLimitsJSON(
+			tsEarlyS5, 10000, 500, 6000, "codex", "pro",
+			&testjsonl.CodexRateLimitWindow{
+				UsedPercent: 40, WindowMinutes: 10080, ResetsAtNull: true,
+			},
+			nil, "100.0",
+		))
+		sess, _ := runCodexParserTest(t, "test.jsonl", content, false)
+		require.NotNil(t, sess)
+		require.Len(t, sess.RateLimitSnapshots, 1)
+		assert.Nil(t, sess.RateLimitSnapshots[0].ResetsAt, "a null resets_at must not be flattened to 0")
+	})
+
+	// A null window_minutes, independent of resets_at, must likewise be
+	// preserved as nil rather than flattened to 0.
+	t.Run("a null window_minutes is preserved as nil, not flattened to zero", func(t *testing.T) {
+		content := build(testjsonl.CodexTokenCountWithRateLimitsJSON(
 			tsEarlyS5, 10000, 500, 6000, "codex", "pro",
 			&testjsonl.CodexRateLimitWindow{UsedPercent: 40, WindowMinutesNull: true, ResetsAtNull: true},
 			nil, "100.0",
-		),
-	)
-	sess, _ := runCodexParserTest(t, "test.jsonl", content, false)
-	require.NotNil(t, sess)
-	require.Len(t, sess.RateLimitSnapshots, 1)
-	assert.Nil(t, sess.RateLimitSnapshots[0].ResetsAt, "a null resets_at must not be flattened to 0")
-	assert.Nil(t, sess.RateLimitSnapshots[0].WindowMinutes, "a null window_minutes must not be flattened to 0")
+		))
+		sess, _ := runCodexParserTest(t, "test.jsonl", content, false)
+		require.NotNil(t, sess)
+		require.Len(t, sess.RateLimitSnapshots, 1)
+		assert.Nil(t, sess.RateLimitSnapshots[0].WindowMinutes, "a null window_minutes must not be flattened to 0")
+	})
+
+	t.Run("re-parsing the same file produces the same dedup key", func(t *testing.T) {
+		content := testjsonl.JoinJSONL(
+			testjsonl.CodexSessionMetaJSON("rl-dedup", "/tmp", "user", tsEarly),
+			testjsonl.CodexTurnContextJSON("gpt-5.4", tsEarlyS1),
+			testjsonl.CodexMsgJSON("user", "hello", tsEarlyS1),
+			testjsonl.CodexMsgJSON("assistant", "hi", tsEarlyS5),
+			testjsonl.CodexTokenCountWithRateLimitsJSON(
+				tsEarlyS5, 10000, 500, 6000,
+				"codex", "pro",
+				&testjsonl.CodexRateLimitWindow{
+					UsedPercent: 50, WindowMinutes: 10080, ResetsAt: 1789435448,
+				},
+				nil,
+				"100.0",
+			),
+		)
+		sess1, _ := runCodexParserTest(t, "test.jsonl", content, false)
+		sess2, _ := runCodexParserTest(t, "test.jsonl", content, false)
+		require.Len(t, sess1.RateLimitSnapshots, 1)
+		require.Len(t, sess2.RateLimitSnapshots, 1)
+		// db.RateLimitSnapshotDedupKey (internal/db, which imports this
+		// package so it cannot be imported back here) hashes session id,
+		// observed timestamp, limit id, window kind, and ordinal for a
+		// row with a session id. Re-parsing the same file must reproduce
+		// these identically so the derived dedup key matches and a
+		// re-parse cannot duplicate the stored row.
+		s1, s2 := sess1.RateLimitSnapshots[0], sess2.RateLimitSnapshots[0]
+		assert.Equal(t, s1.SessionID, s2.SessionID)
+		assert.True(t, s1.ObservedAt.Equal(s2.ObservedAt))
+		assert.Equal(t, s1.LimitID, s2.LimitID)
+		assert.Equal(t, s1.WindowKind, s2.WindowKind)
+	})
 }
 
 // testUUIDv7 builds a syntactically valid UUIDv7 whose embedded
@@ -3666,6 +3774,45 @@ func TestSeedCodexIncrementalStatePropagatesReaderError(t *testing.T) {
 	)
 
 	require.ErrorIs(t, err, wantErr)
+}
+
+// TestCodexSessionBuilder_DiscardRateLimitSnapshots covers the seed
+// scan's memory bound: seedCodexIncrementalStateFromReader scans a
+// (potentially large) prefix purely to reconstruct cursor state, which
+// never carries rate-limit history, so it sets discardRateLimitSnapshots
+// to avoid accumulating observations that scan never returns. A normal
+// builder still collects every observation.
+func TestCodexSessionBuilder_DiscardRateLimitSnapshots(t *testing.T) {
+	const eventCount = 5000
+	rateLimitsLine := testjsonl.CodexTokenCountWithRateLimitsJSON(
+		tsEarlyS5, 10000, 500, 6000,
+		"codex", "pro",
+		&testjsonl.CodexRateLimitWindow{
+			UsedPercent: 42, WindowMinutes: 10080, ResetsAt: 1789435448,
+		},
+		nil,
+		"100.0",
+	)
+
+	for _, tc := range []struct {
+		name    string
+		discard bool
+		want    int
+	}{
+		{"discarded when the flag is set", true, 0},
+		{"collected when the flag is unset (default)", false, eventCount},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newCodexSessionBuilder(
+				context.Background(), false, nil, NewCodexCollectingSink(0),
+			)
+			b.discardRateLimitSnapshots = tc.discard
+			for range eventCount {
+				b.processLine(rateLimitsLine)
+			}
+			assert.Len(t, b.rateLimitSnapshots, tc.want)
+		})
+	}
 }
 
 func TestParseCodexSession_OrphanToolResultsAreNotPrompts(t *testing.T) {

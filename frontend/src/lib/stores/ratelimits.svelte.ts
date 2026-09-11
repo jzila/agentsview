@@ -1,7 +1,6 @@
 import {
   RateLimitsService,
   type GetApiV1RateLimitsHistoryVendor,
-  type GetApiV1RateLimitsHistoryWindow,
   type ServiceRateLimitWindow,
 } from "../api/generated/index";
 import { callGenerated, isAbortError } from "../api/runtime.js";
@@ -15,14 +14,15 @@ export type RateLimitWindow = ServiceRateLimitWindow;
 const RATE_LIMIT_HISTORY_MAX_POINTS = 200;
 
 /**
- * Identifies one Usage-page rate-limit card. This must be the full
- * identity a card is grouped by (see LatestRateLimitSnapshots on the
- * backend) -- vendor, account id, machine, limit id, and window kind --
- * not just a subset. Two cards can share a limit id and window kind
- * while differing in machine (e.g. the same account synced from two
- * machines), and each needs its own history request and cache entry so
- * their charts do not merge. Codex snapshots carry no account identity
- * (accountId always "").
+ * Identifies one Usage-page rate-limit card, spanning both vendors. This
+ * must be the full identity a card is grouped by on the backend (see
+ * LatestRateLimitSnapshots) -- vendor, account id, machine, limit id,
+ * and window kind -- not just a subset. Two cards can share a limit id
+ * and window kind while differing in machine (e.g. the same Codex
+ * account synced from two machines), and each needs its own history
+ * request and cache entry so their charts do not merge. Codex snapshots
+ * carry no account identity (accountId always ""); Claude snapshots
+ * carry no machine/limit id (both always "").
  *
  * planType is deliberately not part of this identity: Codex reports it
  * as a label that can flip between "pro" and empty for the same window
@@ -109,12 +109,11 @@ function groupByVendorThenAccount(snapshots: RateLimitWindow[]): RateLimitVendor
 }
 
 /**
- * Rate-limit snapshots for the Usage page's "Rate limits" section
- * (Codex today; the table is vendor-keyed so another vendor can add rows
- * without a frontend change). Mirrors the shape of stores/usage.svelte.ts:
- * reactive state written by callGenerated-wrapped fetches, one
- * AbortController per in-flight request so a filter change cannot let a
- * stale response overwrite a newer one.
+ * Rate-limit snapshots (Codex and Claude) for the Usage page's "Rate
+ * limits" section. Mirrors the shape of stores/usage.svelte.ts: reactive
+ * state written by callGenerated-wrapped fetches, one AbortController per
+ * in-flight request so a filter change cannot let a stale response
+ * overwrite a newer one.
  */
 class RateLimitsStore {
   current: RateLimitWindow[] = $state([]);
@@ -168,8 +167,8 @@ class RateLimitsStore {
       // sessions.filters.agent is the shared, comma-separated agent
       // selection; forwarded as-is so the backend's agent-list match
       // (see db.RateLimitAgentMatchesVendor) naturally empties the
-      // result -- hiding the section -- once a non-Codex-only selection
-      // is active.
+      // result -- hiding the section -- once a selection that omits
+      // every tracked vendor is active.
       const agent = sessions.filters.agent || undefined;
       const data = await callGenerated(
         (options) => RateLimitsService.getApiV1RateLimitsCurrent({ machine, agent }, options),
@@ -206,9 +205,9 @@ class RateLimitsStore {
               // The card's own machine, not the page's (possibly
               // "all machines") filter: history must stay scoped to
               // exactly the window this card renders.
-              machine: identity.machine,
-              limit_id: identity.limitId,
-              window: identity.windowKind as GetApiV1RateLimitsHistoryWindow,
+              machine: identity.machine || undefined,
+              limit_id: identity.limitId || undefined,
+              window: identity.windowKind,
               since,
               until,
               // RateLimitHistoryChart renders a small sparkline-sized

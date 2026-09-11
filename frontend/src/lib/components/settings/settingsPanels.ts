@@ -10,6 +10,7 @@ export type SettingsPanelId =
   | "embeddings"
   | "archive-content"
   | "github"
+  | "claude-accounts"
   | "remote-access";
 
 export interface SettingsPanelMeta {
@@ -98,6 +99,14 @@ export function settingsPanels(): SettingsPanelMeta[] {
       description: m.settings_github_description(),
       group: connections,
       keywords: m.settings_search_keywords_github(),
+    },
+    {
+      id: "claude-accounts",
+      label: m.settings_nav_claude_accounts(),
+      title: m.settings_claude_accounts_title(),
+      description: m.settings_claude_accounts_description(),
+      group: connections,
+      keywords: m.settings_search_keywords_claude_accounts(),
     },
     {
       id: "remote-access",

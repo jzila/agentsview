@@ -13,9 +13,16 @@ import (
 // docs/agents/storage.md). A job with no row simply is not present in the
 // returned map; the Scheduler treats that as "never attempted."
 func (db *DB) LoadPollerStatuses(ctx context.Context) (map[string]poller.Status, error) {
+	// No read-only-open tolerance is needed here for a missing
+	// retry_after_until column (contrast isMissingRateLimitSnapshotsColumnErr):
+	// LoadPollerStatuses is only ever called through poller.Scheduler's
+	// StatusStore, which cmd/agentsview wires exclusively to the daemon's
+	// own writable *DB -- the same connection applySchemaColumnMigrations
+	// already ran against before Start can call it, so the column always
+	// exists by the time this query runs.
 	rows, err := db.getReader().QueryContext(ctx, `
 		SELECT name, last_attempt, last_success, last_error,
-		       consecutive_failures, next_run
+		       consecutive_failures, next_run, retry_after_until
 		FROM poller_status
 	`)
 	if err != nil {
@@ -32,10 +39,11 @@ func (db *DB) LoadPollerStatuses(ctx context.Context) (map[string]poller.Status,
 			lastError           string
 			consecutiveFailures int
 			nextRun             string
+			retryAfterUntil     string
 		)
 		if err := rows.Scan(
 			&name, &lastAttempt, &lastSuccess, &lastError,
-			&consecutiveFailures, &nextRun,
+			&consecutiveFailures, &nextRun, &retryAfterUntil,
 		); err != nil {
 			return nil, fmt.Errorf("scanning poller_status: %w", err)
 		}
@@ -47,6 +55,7 @@ func (db *DB) LoadPollerStatuses(ctx context.Context) (map[string]poller.Status,
 		status.LastAttempt = parsePollerStatusTime(lastAttempt)
 		status.LastSuccess = parsePollerStatusTime(lastSuccess)
 		status.NextRun = parsePollerStatusTime(nextRun)
+		status.RetryAfterUntil = parsePollerStatusTime(retryAfterUntil)
 		out[name] = status
 	}
 	if err := rows.Err(); err != nil {
@@ -60,14 +69,15 @@ func (db *DB) SaveStatus(ctx context.Context, status poller.Status) error {
 	_, err := db.getWriter().ExecContext(ctx, `
 		INSERT INTO poller_status
 			(name, last_attempt, last_success, last_error,
-			 consecutive_failures, next_run, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+			 consecutive_failures, next_run, retry_after_until, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			last_attempt = excluded.last_attempt,
 			last_success = excluded.last_success,
 			last_error = excluded.last_error,
 			consecutive_failures = excluded.consecutive_failures,
 			next_run = excluded.next_run,
+			retry_after_until = excluded.retry_after_until,
 			updated_at = excluded.updated_at
 	`,
 		status.Name,
@@ -76,6 +86,7 @@ func (db *DB) SaveStatus(ctx context.Context, status poller.Status) error {
 		status.LastError,
 		status.ConsecutiveFailures,
 		formatPollerStatusTime(status.NextRun),
+		formatPollerStatusTime(status.RetryAfterUntil),
 		time.Now().UTC().Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -126,14 +137,35 @@ func (db *DB) CopyPollerStatusFrom(sourcePath string) error {
 		return nil
 	}
 
-	if _, err := conn.ExecContext(ctx, `
+	// retry_after_until is a later column: a source archive built before
+	// it existed has the table but not this column, so the copy falls
+	// back to leaving it at its '' default for copied rows rather than
+	// failing the whole copy over "no such column".
+	var hasRetryAfterUntil bool
+	if err := conn.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM pragma_table_info('poller_status', 'old_db')
+		WHERE name = 'retry_after_until'
+	)`).Scan(&hasRetryAfterUntil); err != nil {
+		return fmt.Errorf("checking source poller status columns: %w", err)
+	}
+
+	copyQuery := `
 		INSERT OR REPLACE INTO poller_status
 			(name, last_attempt, last_success, last_error,
 			 consecutive_failures, next_run, updated_at)
 		SELECT name, last_attempt, last_success, last_error,
 			consecutive_failures, next_run, updated_at
-		FROM old_db.poller_status`,
-	); err != nil {
+		FROM old_db.poller_status`
+	if hasRetryAfterUntil {
+		copyQuery = `
+			INSERT OR REPLACE INTO poller_status
+				(name, last_attempt, last_success, last_error,
+				 consecutive_failures, next_run, retry_after_until, updated_at)
+			SELECT name, last_attempt, last_success, last_error,
+				consecutive_failures, next_run, retry_after_until, updated_at
+			FROM old_db.poller_status`
+	}
+	if _, err := conn.ExecContext(ctx, copyQuery); err != nil {
 		return fmt.Errorf("copying poller status: %w", err)
 	}
 	return nil

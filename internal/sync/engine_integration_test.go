@@ -6342,12 +6342,15 @@ func TestCodexRequiredReparseWithoutIndexPreservesStoredTitle(t *testing.T) {
 	}
 }
 
-// TestUpgradingArchiveBackfillsCodexRateLimitSnapshots pins the
-// data-version-backfill invariant: a session stamped at a data_version
-// older than the one that added rate_limits extraction must get a full
-// reparse (not skip via the incremental fast path) once
-// db.CurrentDataVersion() moves past it, backfilling its history from the
-// unchanged source file.
+// TestUpgradingArchiveBackfillsCodexRateLimitSnapshots covers an archive
+// synced by a binary that predates Codex rate_limits extraction: its
+// Codex sessions sit at an older data_version with no
+// rate_limit_snapshots rows, even though the source rollout file already
+// contains the rate_limits payload. Bumping db.CurrentDataVersion() (see
+// the (107: ...) comment above dataVersion) must force those sessions
+// through a full reparse on the next sync, backfilling the history from
+// the unchanged file, rather than the incremental/skip-cache fast path
+// leaving them untouched.
 func TestUpgradingArchiveBackfillsCodexRateLimitSnapshots(t *testing.T) {
 	root := t.TempDir()
 	codexDir := filepath.Join(root, "sessions")
@@ -6394,7 +6397,9 @@ func TestUpgradingArchiveBackfillsCodexRateLimitSnapshots(t *testing.T) {
 	require.NotNil(t, sess)
 	assert.Equal(t, db.CurrentDataVersion(), sess.DataVersion)
 
-	rows, err := env.db.RateLimitSnapshotHistory(context.Background(), db.RateLimitHistoryFilter{})
+	rows, err := env.db.RateLimitSnapshotHistory(
+		context.Background(), db.RateLimitHistoryFilter{Vendor: "codex"},
+	)
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "upgrading the archive must backfill rate-limit history from the unchanged file")
 	assert.InDelta(t, 33.0, rows[0].UsedPercent, 0.001)

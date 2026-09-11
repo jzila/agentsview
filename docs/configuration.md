@@ -164,7 +164,8 @@ chart_palette = "agentsview"
 | `[[session_sources]]`               | Additional filesystem session roots with per-root machine labels — see [Filesystem Session Sync](/docs/filesystem-sync/)                                                                                                                                  |
 | `[automated]`                       | Custom automated-session patterns — see [Automated Session Detection](#automated-session-detection)                                                                                                                                                       |
 | `[custom_model_pricing]`            | Per-model price overrides for usage reports — see [Custom Model Pricing](/docs/token-usage/#custom-model-pricing)                                                                                                                                         |
-| `[poller]`                          | Background poller (pricing refresh, Cursor usage) master switch and per-job interval overrides — see [Background Pollers](#background-pollers)                                                                                                           |
+| `[poller]`                          | Background poller (pricing refresh, Cursor usage, Claude usage) master switch and per-job interval overrides — see [Background Pollers](#background-pollers)                                                                                             |
+| `[claude.accounts.<name>]`          | Claude Code accounts polled for rate-limit windows — see [Claude Rate Limits](#claude-rate-limits)                                                                                                                                                         |
 
 The `cursor_secret` is generated automatically on first run. For Gist
 publishing, AgentsView first uses a saved `github_token`. For local browser
@@ -310,15 +311,89 @@ variable is unset. The email and user ID values are default filters; pass
 `--email` or `--user-id` to `agentsview usage cursor` to override them for one
 import.
 
+## Claude Rate Limits
+
+!!! warning
+
+    This polls `GET https://api.anthropic.com/api/oauth/usage`, an
+    **unofficial, undocumented endpoint that Claude Code itself uses** — not
+    a published Anthropic API. It may change or be removed without notice.
+    See `docs/internal/session-format-sources.md` for the evidence this was
+    reverse-engineered from and `docs/token-usage.md` for what is stored.
+
+A writable daemon polls one or more configured Claude Code accounts for
+rate-limit window utilization so they can appear alongside Codex's rate
+limits on the Usage page. Configure each account under
+`[claude.accounts.<name>]`:
+
+```toml
+[claude.accounts.personal]
+credentials = "keychain"            # keychain | file:<path> | env:<VAR>
+claude_config = "~/.claude.json"    # where oauthAccount identity is read; default shown
+
+[claude.accounts.work]
+credentials = "file:~/.claude-work/.credentials.json"
+claude_config = "~/.claude-work/.claude.json"
+```
+
+| Field                                | Description                                                                                                                                                                                                        |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude.accounts.<name>.credentials`  | Where the OAuth access token comes from: `"keychain"` (macOS Keychain service `Claude Code-credentials`, or `~/.claude/.credentials.json` on Linux), `"file:<path>"`, or `"env:<VAR>"` (raw token in an env var) |
+| `claude.accounts.<name>.claude_config` | Path to the `.claude.json` file this account's identity is read from; defaults to `~/.claude.json`                                                                                                               |
+
+Credentials are read fresh on every poll and never written to the
+archive or logged. A 401 means the token is invalid or expired -- the
+poller never refreshes it itself; re-run `claude` and the next poll
+picks up the new token. Each account registers its own
+`claude-usage:<name>` background job (see
+[Background Pollers](#background-pollers)) and appears with its
+identity, tier, last poll time, and last error in **Settings >
+Connections > Claude accounts**, with a **Test** button.
+
+One entry follows whichever organization is currently logged in for
+that `.claude.json`: windows are identified by account UUID plus
+organization UUID, so logging into a different org starts a second
+group of cards rather than overwriting the one you left. To poll two
+organizations at once, configure two entries with their own
+`claude_config`/`credentials`.
+
+For containerized or CI use without a `config.toml`, a "default"
+account can be set entirely from the environment (this only ever
+creates or overrides the `"default"` key):
+
+```bash
+export AGENTSVIEW_CLAUDE_ACCOUNT_CREDENTIALS=env:CLAUDE_CODE_OAUTH_TOKEN
+export AGENTSVIEW_CLAUDE_ACCOUNT_CONFIG=/path/to/.claude.json
+```
+
+As a network-free, lower-latency complement, `agentsview claude
+statusline-sink` reads the JSON Claude Code passes to a `statusLine`
+command on stdin and records the `five_hour`/`seven_day`/`spend_limit`
+windows it carries (never Opus, Sonnet, or OAuth-apps, so it is not a
+substitute for a configured poller):
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash -c 'tee >(agentsview claude statusline-sink) | your-statusline-command'"
+  }
+}
+```
+
+This must run under `bash`, not a bare `sh`: `tee`'s `>(...)` process
+substitution fails to parse under a POSIX `sh` such as dash.
+
 ## Background Pollers
 
 A writable daemon runs a small set of background jobs on their own interval,
 each recording its own last-attempt, last-success, last-error, and next-run
 state (`agentsview doctor pollers`, or `GET /api/v1/system/pollers`). Today
 that is the LiteLLM/GenAI/OpenRouter pricing catalog refresh (always
-registered) and, when `cursor_admin_api_key` is configured, a Cursor Admin
-usage poll that keeps the archive current between manual
-`agentsview usage cursor` runs — the same fetch-and-store path backs both.
+registered), a Cursor Admin usage poll when `cursor_admin_api_key` is
+configured (the same fetch-and-store path backs manual
+`agentsview usage cursor` runs), and one `claude-usage:<name>` poll per
+configured `[claude.accounts.<name>]` entry.
 
 ```toml
 [poller]
@@ -327,12 +402,13 @@ enabled = true
 [poller.intervals]
 pricing-refresh = "24h"
 cursor-usage = "30m"
+"claude-usage:personal" = "5m"
 ```
 
 | Field              | Description                                                                                                                                                                                    |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `poller.enabled`   | Master switch for all background poller jobs (default `true`); can also be set with `AGENTSVIEW_POLLER_ENABLED`. Disabling it does not affect on-demand paths like `agentsview usage cursor`. |
-| `poller.intervals` | Per-job poll interval overrides, keyed by the job's stable name (`pricing-refresh`, `cursor-usage`)                                                                                            |
+| `poller.intervals` | Per-job poll interval overrides, keyed by the job's stable name (`pricing-refresh`, `cursor-usage`, `claude-usage:<name>`)                                                                     |
 
 Background polls never count as daemon activity: they cannot keep an
 otherwise-idle detached daemon from exiting after `daemon_idle_timeout`.

@@ -490,7 +490,9 @@ CREATE INDEX IF NOT EXISTS idx_provider_freshness_updated_at
 // (108: Codex token_count events now also extract the rate_limits object
 // into rate_limit_snapshots. An unchanged rollout file byte-for-byte
 // still needs re-parsing to backfill this history, because a fingerprint
-// change alone cannot repair a session parsed before this field existed.)
+// change alone cannot repair a session parsed before this field existed.
+// Claude rate-limit snapshots come from a background oauth/usage poll, not
+// from parsing, so they need no dataVersion bump of their own.)
 const dataVersion = 108
 
 const tokenCoverageRepairStatsKey = "token_coverage_repair_v1"
@@ -2495,6 +2497,31 @@ func schemaColumnMigrations() []schemaColumnMigration {
 			"sessions", "sync_marker",
 			"ALTER TABLE sessions ADD COLUMN sync_marker TEXT",
 		},
+		// rate_limit_snapshots itself is defined directly in schema.sql
+		// (this whole stack is unreleased, so there is no archive
+		// carrying the pre-severity dedup_key format or legacy Claude
+		// window kinds to migrate), but severity was added to that base
+		// CREATE TABLE after some archives created by an earlier build
+		// of this same branch already had the table without it:
+		// CREATE TABLE IF NOT EXISTS is a no-op against an
+		// already-existing table, so those archives need this ALTER
+		// TABLE to pick the column up (roborev-ci finding: without it,
+		// every snapshot insert against such an archive fails outright
+		// with "no such column: severity").
+		{
+			"rate_limit_snapshots", "severity",
+			"ALTER TABLE rate_limit_snapshots ADD COLUMN severity TEXT NOT NULL DEFAULT ''",
+		},
+		// Same reasoning as rate_limit_snapshots.severity above:
+		// retry_after_until was added to poller_status's base CREATE
+		// TABLE after some archives from an earlier build of this same
+		// branch already had the table without it, and CREATE TABLE IF
+		// NOT EXISTS does not retrofit those archives (roborev-ci
+		// finding).
+		{
+			"poller_status", "retry_after_until",
+			"ALTER TABLE poller_status ADD COLUMN retry_after_until TEXT NOT NULL DEFAULT ''",
+		},
 	}
 }
 
@@ -3433,6 +3460,9 @@ func (db *DB) createPartialIndexesLocked(w *writerHandle) error {
 	if err := ensureUsageIndexesLocked(w); err != nil {
 		return err
 	}
+	if err := ensureRateLimitBucketIndexesLocked(w); err != nil {
+		return err
+	}
 	var sourceIndexColumns sql.NullString
 	if err := w.QueryRow(`
 		SELECT group_concat(name, ',')
@@ -3573,6 +3603,71 @@ func ensureUsageIndexColumnsLocked(
 		}
 		if _, err := w.Exec(ddl); err != nil {
 			return fmt.Errorf("creating usage index %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// ensureRateLimitBucketIndexesLocked covers a roborev-ci finding:
+// idx_rate_limit_snapshots_bucket_observed and idx_rate_limit_snapshots_
+// bucket_jd both changed definition (each gained a leading
+// rateLimitBucketWindowKindExpr column so a Claude account's
+// independent windows get their own bucket) while keeping their
+// existing names under CREATE INDEX IF NOT EXISTS in schema.sql, which
+// is a no-op against an index that name already identifies -- an
+// archive built before this change keeps the old, narrower index
+// forever, and the bucket-discovery queries that depend on the new
+// column ordering fall back to a full bucket scan against it. Unlike
+// ensureUsageIndexColumnsLocked's plain-column comparison, these two
+// indexes lead with an expression column, which pragma_index_info
+// always reports as a NULL name regardless of shape, so old and new
+// cannot be told apart by name; comparing the column count (5 vs 6,
+// and 6 vs 7) does distinguish them and works for either shape.
+func ensureRateLimitBucketIndexesLocked(w *writerHandle) error {
+	for _, idx := range []struct {
+		name        string
+		wantColumns int
+		ddl         string
+	}{
+		{
+			"idx_rate_limit_snapshots_bucket_observed", 6,
+			`CREATE INDEX IF NOT EXISTS idx_rate_limit_snapshots_bucket_observed
+			 ON rate_limit_snapshots(
+			     vendor, machine, account_id, limit_id,
+			     (CASE WHEN vendor = 'claude' THEN window_kind ELSE '' END),
+			     observed_at
+			 )`,
+		},
+		{
+			"idx_rate_limit_snapshots_bucket_jd", 7,
+			`CREATE INDEX IF NOT EXISTS idx_rate_limit_snapshots_bucket_jd
+			 ON rate_limit_snapshots(
+			     vendor, machine, account_id, limit_id,
+			     (CASE WHEN vendor = 'claude' THEN window_kind ELSE '' END),
+			     julianday(observed_at), id
+			 )`,
+		},
+	} {
+		var have int
+		if err := w.QueryRow(fmt.Sprintf(
+			`SELECT COUNT(*) FROM pragma_index_info('%s')`, idx.name,
+		)).Scan(&have); err != nil {
+			return fmt.Errorf("probing rate limit bucket index %s: %w", idx.name, err)
+		}
+		if have == idx.wantColumns {
+			continue
+		}
+		if have != 0 {
+			log.Printf(
+				"rebuilding stale SQLite rate limit bucket index %s; startup continues after the archive index migration completes",
+				idx.name,
+			)
+		}
+		if _, err := w.Exec(`DROP INDEX IF EXISTS ` + idx.name); err != nil {
+			return fmt.Errorf("dropping stale rate limit bucket index %s: %w", idx.name, err)
+		}
+		if _, err := w.Exec(idx.ddl); err != nil {
+			return fmt.Errorf("creating rate limit bucket index %s: %w", idx.name, err)
 		}
 	}
 	return nil

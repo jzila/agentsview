@@ -9,11 +9,11 @@ export type GetApiV1RateLimitsCurrentParams = {
    */
   vendor?: GetApiV1RateLimitsCurrentVendor;
   /**
-   * Filter by account id; scopes vendors that have accounts and never excludes an account-less vendor's rows (Codex today)
+   * Filter by account id (Claude's oauthAccount accountUuid + organizationUuid, one per org a user is logged into); scopes vendors that have accounts and never excludes an account-less vendor's rows (Codex today)
    */
   account_id?: string;
   /**
-   * Filter by machine (comma-separated)
+   * Filter by machine (Codex only, comma-separated)
    */
   machine?: string;
   /**

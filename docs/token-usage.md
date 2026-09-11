@@ -232,47 +232,41 @@ cache creation without earning the reads back.
 
 ![Cache efficiency panel](/docs/assets/generated/screenshots/usage-cache-efficiency.png)
 
-### Rate Limits
+### Rate Limits (Codex and Claude)
 
-When the archive contains sessions from a vendor whose rate limits agentsview
-tracks (Codex CLI today), the Usage page adds a **Rate limits** section below
-the summary cards, grouped by vendor and then by account (Codex reports no
-account identity, so its group is keyed by machine instead): one card per
-rate-limit window (Codex reports up to two — a short `primary` window and a
-longer `secondary` window, e.g. 5 hours and 7 days), showing how much of the
-window is used, when it resets, the plan type, and the current credit
-balance, plus a small history chart of used-percent over the selected date
-range, plotted on a real time axis so the spacing between points reflects how
-much time actually elapsed. The section is hidden entirely for archives with
-no rate-limit data.
+When the archive has Codex rate-limit data or a `[claude.accounts.<name>]`
+poller configured, the Usage page adds a **Rate limits** section below the
+summary cards, grouped first by vendor and then by account: one card per
+rate-limit window, showing how much of the window is used, when it resets,
+and (Codex only) the plan type and current credit balance, plus a small
+history chart of used-percent over the selected date range. The section is
+hidden entirely when there is no rate-limit data for either vendor.
 
-Codex CLI writes a `rate_limits` object into its `token_count` events;
-agentsview persists each observation into a vendor-keyed
-`rate_limit_snapshots` table (SQLite only — see `docs/agents/storage.md`) and
-serves it over:
+Codex reports up to two windows per session (a short `primary` and a
+longer `secondary`, e.g. 5 hours and 7 days) via its `token_count`
+events. Claude reports through the oauth/usage response's `limits`
+array when present, falling back to fixed buckets otherwise, plus a
+separate extra-usage monthly credit card; see `docs/agents/storage.md`
+for the ingestion and identity details, and
+[Claude Rate Limits](/docs/configuration/#claude-rate-limits) to
+configure an account.
 
-```http
-GET /api/v1/rate-limits/current
-GET /api/v1/rate-limits/history
-```
+!!! warning
 
-Both accept `vendor`, `account_id`, and `machine` filters (`agent` is a
-deprecated alias for `vendor`); `history` additionally accepts `limit_id`,
-`window`, `since`, `until`, and `max_points` (default 500), but not
-`plan_type`: a window's identity for history purposes is (vendor,
-machine, account_id, limit_id, window_kind), and the returned series
-(and its downsampling) covers the whole window regardless of the
-`plan_type` label each observation happens to carry. A `history`
-request spanning more observations than `max_points` is downsampled: the
-range is divided into `max_points` equal-width time buckets and only the
-most recently observed row in each bucket is kept, so a wide date range
-does not grow the response (or the chart's point count) unboundedly.
-Codex rollouts do not currently report a
-stable per-account identifier, so Codex snapshots are grouped by machine,
-`limit_id`, and window kind rather than by account — see the Codex
-entry in `docs/internal/session-format-sources.md` for the evidence and
-`internal/db/schema.sql` for the exact column set, including the columns
-reserved for a future account-keyed vendor.
+    Claude rate-limit data comes from `GET
+    https://api.anthropic.com/api/oauth/usage`, an **unofficial,
+    undocumented endpoint that Claude Code itself uses internally** -- it
+    is not a published, stable Anthropic API and may change or be
+    removed without notice. See `docs/internal/session-format-sources.md`.
+
+Both vendors' observations are persisted into one generalized,
+SQLite-only `rate_limit_snapshots` table (`docs/agents/storage.md`) and
+served over `GET /api/v1/rate-limits/current` and `/history`, both
+accepting `vendor`, `account_id`, and `machine` filters (`history` also
+accepts `limit_id`, `window`, `since`, `until`, and `max_points`). Codex
+snapshots group by machine, `limit_id`, and window kind (no stable
+per-account identifier); Claude snapshots group by the account's
+`accountUuid` plus `organizationUuid`.
 
 The dashboard reads from the same `model_pricing` table that backs the CLI
 commands below, so the numbers line up exactly with what

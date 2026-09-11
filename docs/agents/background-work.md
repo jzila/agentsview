@@ -24,9 +24,16 @@ across a restart.
   (`server.IdleTracker`, used by `serve`). Only set it `true` for work that
   genuinely should keep an otherwise-idle detached daemon alive.
 
-- Pricing refresh (`cmd/agentsview/pricing_job.go`) and, when
+- Pricing refresh (`cmd/agentsview/pricing_job.go`); when
   `cursor_admin_api_key` is configured, the Cursor Admin usage poll
-  (`internal/cursorusage/job.go`) run on the Scheduler today.
+  (`internal/cursorusage/job.go`); and one `claude-usage:<name>` poll
+  (`internal/claude/job.go`) per configured `[claude.accounts.<name>]`
+  entry all run on the Scheduler today. The Claude job returns the
+  Scheduler's `RetryAfterError` on a 429 so backoff is centralized, and
+  treats a 401 as a hard error surfaced through poller status rather than
+  attempting to refresh the token itself -- see
+  `docs/internal/session-format-sources.md` for why (an unofficial
+  endpoint; only `claude` itself refreshes its OAuth token).
 
 - Periodic session sync (`startPeriodicSync`), the semantic-search embedding
   schedule (`internal/vector`, `[vector.embed]`), and automatic recall

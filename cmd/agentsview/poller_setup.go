@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"strings"
 	"time"
 
+	"go.kenn.io/agentsview/internal/claude"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/cursorusage"
 	"go.kenn.io/agentsview/internal/db"
@@ -52,9 +54,24 @@ func cursorUsageJobOptions() poller.Options {
 	}
 }
 
+// claudeUsageJobOptions is the Scheduler Options for one Claude account's
+// usage poll: a 1-minute cooldown (per the ticket) keeps a restart or a
+// manual TriggerNow from immediately re-polling, and jitter spreads load
+// when several accounts share the default interval. It is a background
+// poll and must not count toward the daemon idle-shutdown timer.
+func claudeUsageJobOptions() poller.Options {
+	return poller.Options{
+		Jitter:           30 * time.Second,
+		Cooldown:         claude.DefaultCooldown,
+		RunAtStart:       true,
+		KeepsDaemonAlive: false,
+	}
+}
+
 // setupPollerScheduler builds and starts the internal/poller Scheduler for
-// this daemon: pricing refresh always, plus Cursor usage polling when an
-// admin API key is configured. It returns nil when the [poller] master
+// this daemon: pricing refresh always, Cursor usage polling when an admin
+// API key is configured, and one Claude usage poll per configured
+// [claude.accounts.NAME] entry. It returns nil when the [poller] master
 // switch is disabled, in which case no background jobs run at all;
 // on-demand paths (CLI commands, the synchronous startup pricing seed) are
 // unaffected. Background jobs never count toward the daemon idle-shutdown
@@ -92,6 +109,26 @@ func setupPollerScheduler(
 			cfg.CursorAdminUserID,
 		)
 		sched.Register(cursorJob, cursorUsageJobOptions())
+	}
+
+	if homeDir, err := os.UserHomeDir(); err != nil {
+		if len(cfg.Claude.Accounts) > 0 {
+			log.Printf("claude-usage: resolving home directory: %v", err)
+		}
+	} else {
+		claudeClient := claude.NewClient()
+		for name, acct := range cfg.Claude.Accounts {
+			src, err := claude.ParseCredentialsSource(acct.Credentials)
+			if err != nil {
+				log.Printf("claude-usage:%s: %v (skipping)", name, err)
+				continue
+			}
+			job := claude.NewJob(
+				name, claudeClient, database, homeDir, src, acct.ClaudeConfig,
+				resolvePollerInterval(cfg, claude.JobName(name), claude.DefaultInterval),
+			)
+			sched.Register(job, claudeUsageJobOptions())
+		}
 	}
 
 	sched.Start(ctx)

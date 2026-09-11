@@ -1,9 +1,11 @@
 // ABOUTME: Rate-limit request/response types and the thin translation
-// ABOUTME: between db.RateLimitSnapshot rows and the API shape.
+// ABOUTME: between db.RateLimitSnapshot rows and the API shape, across
+// ABOUTME: both the Codex and Claude vendors.
 package service
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"go.kenn.io/agentsview/internal/db"
@@ -12,12 +14,14 @@ import (
 // RateLimitFilterRequest is the transport-neutral filter shared by the
 // current-snapshot and history endpoints.
 type RateLimitFilterRequest struct {
-	// Vendor narrows to one vendor ("codex" today); empty matches every
-	// vendor the table holds.
+	// Vendor narrows to "codex" or "claude"; empty matches every vendor
+	// the table holds.
 	Vendor string `json:"vendor,omitempty"`
-	// AccountID narrows to one account. Reserved for a future
-	// account-keyed vendor; ignored for Codex rows, which carry no
-	// account identity.
+	// AccountID narrows to one Claude account -- a seat within an org,
+	// keyed as accountUuid + organizationUuid (see claude.Identity.
+	// AccountKey), so switching orgs on the same accountUuid produces a
+	// distinct id. Ignored for Codex rows, which carry no account
+	// identity.
 	AccountID string `json:"accountId,omitempty"`
 	Machine   string `json:"machine,omitempty"`
 	// Agent is the same comma-separated agent selection the shared
@@ -48,25 +52,27 @@ type RateLimitHistoryRequest struct {
 }
 
 // RateLimitWindow is the API shape for one rate-limit window snapshot:
-// which vendor reported it, how much of the window is used, when it
-// resets, and (Codex only) the plan type and credit balance reported
-// alongside it.
+// which vendor and account reported it, how much of the window is used,
+// when it resets, and (Codex only) the plan type and credit balance
+// reported alongside it.
 type RateLimitWindow struct {
 	Vendor       string `json:"vendor"`
 	AccountID    string `json:"accountId,omitempty"`
 	AccountLabel string `json:"accountLabel,omitempty"`
-	Machine      string `json:"machine"`
-	LimitID      string `json:"limitId"`
+	Machine      string `json:"machine,omitempty"`
+	LimitID      string `json:"limitId,omitempty"`
 	LimitName    string `json:"limitName,omitempty"`
 	PlanType     string `json:"planType,omitempty"`
 	WindowKind   string `json:"windowKind"`
 
 	UsedPercent float64 `json:"usedPercent"`
-	// WindowMinutes is omitted when Codex did not report this window's
-	// duration on any observation on record (db.RateLimitSnapshot.
-	// WindowMinutes == 0, which never occurs for a genuine duration): the
-	// frontend card falls back to a window-kind label instead of showing
-	// a placeholder duration.
+	// WindowMinutes is omitted when the vendor did not report this
+	// window's duration on any observation on record (db.RateLimitSnapshot.
+	// WindowMinutes == 0, which never occurs for a genuine duration:
+	// Claude always populates it at write time, and Codex reports it on
+	// every window that carries a duration at all): the frontend card
+	// falls back to a window-kind label instead of showing a placeholder
+	// duration.
 	WindowMinutes *int `json:"windowMinutes,omitempty"`
 	// ResetsAt is unix seconds, omitted when the vendor did not report a
 	// reset time for this window (kept nullable rather than flattened
@@ -74,15 +80,23 @@ type RateLimitWindow struct {
 	// window resets at the unix epoch).
 	ResetsAt *int64 `json:"resetsAt,omitempty"`
 
-	CreditsHas       bool   `json:"creditsHas"`
-	CreditsUnlimited bool   `json:"creditsUnlimited"`
+	CreditsHas       bool   `json:"creditsHas,omitempty"`
+	CreditsUnlimited bool   `json:"creditsUnlimited,omitempty"`
 	CreditsBalance   string `json:"creditsBalance,omitempty"`
 
-	// ScopeLabel and Details are reserved for a future vendor whose
-	// rate-limit source reports a scoped or free-form extra shape; both
-	// are always empty for Codex.
+	// ScopeLabel and Severity are Claude-only, sourced from one entry in
+	// the oauth/usage response's top-level `limits` array: ScopeLabel is
+	// the scope's model display name, else its model id, else its
+	// surface (empty for an account-wide entry), and Severity is the
+	// server-reported severity string (e.g. "normal"). Both are always
+	// empty for Codex.
 	ScopeLabel string `json:"scopeLabel,omitempty"`
-	Details    string `json:"details,omitempty"`
+	Severity   string `json:"severity,omitempty"`
+	// Details is a free-form JSON object carrying whatever else the
+	// snapshot's source needs (isActive and the raw scope for a limits
+	// entry; the monthly monetary limit and currency for the
+	// "extra_usage_monthly" window). Absent when nothing extra applies.
+	Details json.RawMessage `json:"details,omitempty"`
 
 	RateLimitReachedType string `json:"rateLimitReachedType,omitempty"`
 	ObservedAt           string `json:"observedAt"`
@@ -97,6 +111,10 @@ func rateLimitWindowFromRow(row db.RateLimitSnapshot) RateLimitWindow {
 	var windowMinutes *int
 	if row.WindowMinutes != 0 {
 		windowMinutes = &row.WindowMinutes
+	}
+	var details json.RawMessage
+	if row.Details != "" && json.Valid([]byte(row.Details)) {
+		details = json.RawMessage(row.Details)
 	}
 	return RateLimitWindow{
 		Vendor:               vendor,
@@ -114,7 +132,8 @@ func rateLimitWindowFromRow(row db.RateLimitSnapshot) RateLimitWindow {
 		CreditsUnlimited:     row.CreditsUnlimited,
 		CreditsBalance:       row.CreditsBalance,
 		ScopeLabel:           row.ScopeLabel,
-		Details:              row.Details,
+		Severity:             row.Severity,
+		Details:              details,
 		RateLimitReachedType: row.RateLimitReachedType,
 		ObservedAt:           row.ObservedAt,
 		SessionID:            row.SessionID,

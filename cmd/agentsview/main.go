@@ -461,6 +461,16 @@ func runServe(cfg config.Config, opts serveOptions) {
 	pollerScheduler := setupPollerScheduler(
 		ctx, cfg, database, pricingRefreshRunner, idleTracker,
 	)
+	// Registered after the closeWriteDB defer above, so by LIFO ordering
+	// this Wait runs first on shutdown: ctx canceling (the signal context
+	// this scheduler was started with) tells every job loop to stop, but
+	// does not by itself guarantee a loop has actually returned control
+	// before the database handle it was writing through closes under it.
+	// Without this, a job mid-status-write when the signal arrives can
+	// lose that final write or run against an already-closed database.
+	if pollerScheduler != nil {
+		defer pollerScheduler.Wait()
+	}
 
 	rtOpts := serveRuntimeOptions{
 		Mode:           "serve",
@@ -488,6 +498,7 @@ func runServe(cfg config.Config, opts serveOptions) {
 	}
 	if pollerScheduler != nil {
 		srvOpts = append(srvOpts, server.WithPollerStatus(pollerScheduler.Status))
+		srvOpts = append(srvOpts, server.WithPollerTrigger(pollerScheduler.TriggerNow))
 	}
 	srvOpts = append(srvOpts, vectorServe.ServerOpts...)
 	if src := newVectorPushSource(cfg); src != nil {

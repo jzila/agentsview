@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"go.kenn.io/agentsview/internal/claude"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/cursorusage"
 )
@@ -84,6 +86,20 @@ func doctorKnownPollerJobs(cfg config.Config) []doctorPollerJob {
 			Name:       cursorusage.JobName,
 			Configured: true,
 		})
+	}
+	// Each configured [claude.accounts.<name>] entry registers its own
+	// poller.Job (see cmd/agentsview/poller_setup.go), so a doctor run
+	// must list one row per account rather than a single "claude" line;
+	// without this, `agentsview doctor pollers` silently omitted every
+	// Claude account even when its persisted status carried an
+	// authentication or polling failure (roborev finding).
+	names := make([]string, 0, len(cfg.Claude.Accounts))
+	for name := range cfg.Claude.Accounts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		jobs = append(jobs, doctorPollerJob{Name: claude.JobName(name), Configured: true})
 	}
 	return jobs
 }

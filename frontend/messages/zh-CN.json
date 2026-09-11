@@ -795,7 +795,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个项目" }
+      "match": {
+        "countPlural=other": "{countNumber} 个项目"
+      }
     }
   ],
   "data_summary_sessions": [
@@ -806,7 +808,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话"
+      }
     }
   ],
   "data_summary_governed": [
@@ -817,7 +821,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话受规则管理" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话受规则管理"
+      }
     }
   ],
   "data_filter_projects": "筛选项目",
@@ -837,7 +843,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 条已启用的规则以此项目为目标" }
+      "match": {
+        "countPlural=other": "{countNumber} 条已启用的规则以此项目为目标"
+      }
     }
   ],
   "data_recorded_original": "已记录为规则的原始标签",
@@ -861,7 +869,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_cwd_unavailable": "此文件夹无法安全映射，因为它不可用或表示文件系统根目录。",
@@ -880,7 +890,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "匹配 {countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "匹配 {countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_sessions_changing": [
@@ -891,7 +903,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "将更改 {countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "将更改 {countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_projects_affected": [
@@ -902,7 +916,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个项目" }
+      "match": {
+        "countPlural=other": "{countNumber} 个项目"
+      }
     }
   ],
   "data_reclassify_normalized_target": "将保存为 {project}",
@@ -915,7 +931,9 @@
         "local countNumber = count: number"
       ],
       "selectors": ["countPlural"],
-      "match": { "countPlural=other": "{countNumber} 个会话" }
+      "match": {
+        "countPlural=other": "{countNumber} 个会话"
+      }
     }
   ],
   "data_reclassify_zero_matches": "此前缀与存档中的任何会话都不匹配。",
@@ -1526,7 +1544,7 @@
   "insights_page_no_matching_generators": "无匹配生成器",
   "insights_page_optional_focus": "可选焦点",
   "insights_page_focus_placeholder": "在不改变评分事实的前提下细化建议",
-  "insights_page_generate_disabled": "此归档无法生成洞察",
+  "insights_page_generate_disabled": "只读模式下已禁用生成",
   "insights_page_generate_title": "生成质量建议",
   "insights_page_generate": "生成",
   "insights_page_loading_archive": "正在加载存档...",
@@ -1987,5 +2005,28 @@
   "rate_limits_window_generic": "{duration} 限额",
   "rate_limits_card_header": "{window} [{name}]",
   "rate_limits_vendor_codex": "Codex",
-  "rate_limits_resets_unknown": "重置时间未知"
+  "rate_limits_resets_unknown": "重置时间未知",
+  "rate_limits_claude_window_five_hour": "会话限制",
+  "rate_limits_claude_window_seven_day": "每周限制",
+  "rate_limits_claude_window_seven_day_opus": "Opus 限制",
+  "rate_limits_claude_window_seven_day_sonnet": "Sonnet 限制",
+  "rate_limits_claude_window_seven_day_oauth_apps": "OAuth 应用限制",
+  "rate_limits_claude_window_seven_day_overage_included": "含超额限制",
+  "rate_limits_vendor_claude": "Claude",
+  "rate_limits_window_generic_label": "{duration}限制",
+  "settings_nav_claude_accounts": "Claude 账户",
+  "settings_claude_accounts_title": "Claude 账户",
+  "settings_claude_accounts_description": "用于轮询速率限制窗口的 Claude Code 账户。凭据仅在 config.toml 中配置。",
+  "settings_search_keywords_claude_accounts": "Claude Code OAuth 速率限制 账户",
+  "settings_claude_accounts_config_hint": "在 config.toml 的 [claude.accounts.<name>] 下配置账户。此面板为只读。",
+  "settings_claude_accounts_empty_title": "未配置 Claude 账户",
+  "settings_claude_accounts_empty_description": "在 config.toml 中添加 [claude.accounts.<name>] 条目，以轮询 Claude Code 账户的速率限制窗口。",
+  "settings_claude_accounts_no_identity": "没有可用身份（尚未登录？）",
+  "settings_claude_accounts_last_poll": "上次轮询",
+  "settings_claude_accounts_last_error": "上次错误",
+  "settings_claude_accounts_test": "测试",
+  "settings_claude_accounts_testing": "测试中…",
+  "settings_claude_accounts_test_failed": "测试失败",
+  "rate_limits_extra_usage_monthly_label": "额外用量",
+  "rate_limits_extra_usage_summary": "{limit} 中的 {percent}%"
 }

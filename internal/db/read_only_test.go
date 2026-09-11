@@ -453,6 +453,25 @@ func TestOpenReadOnlyToleratesMissingRateLimitSnapshotsTable(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestOpenReadOnlyToleratesRateLimitSnapshotsTableMissingAColumn covers a
+// roborev finding: hasRateLimitSnapshotsTable only tolerates an archive
+// that predates the table entirely, but a column this package added
+// later (severity, ordinal, observation_key, ...) arrives via a
+// writable-only ALTER TABLE migration -- an archive created by an older
+// release, whose table therefore exists but is missing one of those
+// columns, and that has never since been opened writably, would
+// otherwise fail Latest/History with "no such column" when opened
+// read-only.
+func TestOpenReadOnlyToleratesRateLimitSnapshotsTableMissingAColumn(t *testing.T) {
+	path := createClosedTestDB(t, tempDBPath(t, "sessions.db"), nil)
+	execRawSQLite(t, path, "ALTER TABLE rate_limit_snapshots DROP COLUMN severity")
+	readonly := openReadOnlyTestDB(t, path)
+	_, err := readonly.LatestRateLimitSnapshots(context.Background(), RateLimitFilter{})
+	require.NoError(t, err)
+	_, err = readonly.RateLimitSnapshotHistory(context.Background(), RateLimitHistoryFilter{})
+	require.NoError(t, err)
+}
+
 func TestOpenReadOnlyCopyHelpersReturnErrReadOnly(t *testing.T) {
 	dir := t.TempDir()
 	srcPath := filepath.Join(dir, "source.db")

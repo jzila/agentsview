@@ -503,8 +503,9 @@ func (c InsightsConfig) APIKey() string {
 }
 
 // PollerConfig controls the internal/poller.Scheduler background jobs
-// (currently pricing-refresh and, when configured, cursor-usage). See
-// docs/configuration.md and docs/agents/background-work.md.
+// (currently pricing-refresh, cursor-usage when configured, and one
+// claude-usage:<name> job per configured [claude.accounts.NAME] entry).
+// See docs/configuration.md and docs/agents/background-work.md.
 type PollerConfig struct {
 	// Enabled is the master switch for all background poller jobs.
 	// Defaults to true; set to false to disable scheduled polling entirely
@@ -513,6 +514,33 @@ type PollerConfig struct {
 	// Intervals overrides a job's default poll interval, keyed by the
 	// job's stable name (e.g. "pricing-refresh", "cursor-usage").
 	Intervals map[string]time.Duration `json:"intervals,omitempty" toml:"intervals"`
+}
+
+// ClaudeAccountConfig configures how the Claude usage poller reads one
+// Claude Code account's OAuth credentials and identity. See
+// docs/configuration.md.
+type ClaudeAccountConfig struct {
+	// Credentials selects where the OAuth access token comes from:
+	// "keychain" (macOS Keychain service "Claude Code-credentials", or
+	// ~/.claude/.credentials.json on Linux), "file:<path>" (a
+	// .credentials.json-shaped file at an explicit path), or
+	// "env:<VAR>" (an environment variable holding the raw access
+	// token, mirroring Claude Code's own CLAUDE_CODE_OAUTH_TOKEN
+	// convention for CI). Never written to the archive.
+	Credentials string `json:"credentials,omitempty" toml:"credentials"`
+	// ClaudeConfig is the path to the .claude.json file this account's
+	// identity (oauthAccount: accountUuid, emailAddress,
+	// organizationName, ...) is read from. Defaults to ~/.claude.json.
+	ClaudeConfig string `json:"claude_config,omitempty" toml:"claude_config"`
+}
+
+// ClaudeConfig holds [claude.accounts.NAME] entries, following the
+// [pg.NAME] named-target convention: each key under Accounts is a stable
+// account name used in the poller job name ("claude-usage:<name>"), the
+// rate_limit_snapshots rows, and the settings panel. See
+// docs/configuration.md.
+type ClaudeConfig struct {
+	Accounts map[string]ClaudeAccountConfig `json:"accounts,omitempty" toml:"accounts"`
 }
 
 // Validate checks endpoint intent and transport safety.
@@ -714,6 +742,7 @@ type Config struct {
 	CursorAdminAPIKey    string                 `json:"cursor_admin_api_key,omitempty" toml:"cursor_admin_api_key"`
 	CursorAdminEmail     string                 `json:"cursor_admin_email,omitempty" toml:"cursor_admin_email"`
 	CursorAdminUserID    string                 `json:"cursor_admin_user_id,omitempty" toml:"cursor_admin_user_id"`
+	Claude               ClaudeConfig           `json:"claude,omitempty" toml:"claude"`
 	GithubToken          string                 `json:"github_token,omitempty" toml:"github_token"`
 	Terminal             TerminalConfig         `json:"terminal,omitempty" toml:"terminal"`
 	AuthToken            string                 `json:"auth_token,omitempty" toml:"auth_token"`
@@ -1492,6 +1521,7 @@ func (c *Config) applyConfigTOML(data string) error {
 		CursorAdminAPIKey              string                 `toml:"cursor_admin_api_key"`
 		CursorAdminEmail               string                 `toml:"cursor_admin_email"`
 		CursorAdminUserID              string                 `toml:"cursor_admin_user_id"`
+		Claude                         ClaudeConfig           `toml:"claude"`
 		Host                           string                 `toml:"host"`
 		Port                           int                    `toml:"port"`
 		ChartPalette                   ChartPalette           `toml:"chart_palette"`
@@ -1550,6 +1580,44 @@ func (c *Config) applyConfigTOML(data string) error {
 	}
 	if file.CursorAdminUserID != "" && c.CursorAdminUserID == "" {
 		c.CursorAdminUserID = file.CursorAdminUserID
+	}
+	if len(file.Claude.Accounts) > 0 {
+		// Merge rather than replace: loadEnv() (which can set a
+		// "default" account from AGENTSVIEW_CLAUDE_ACCOUNT_*) always
+		// runs before this file layer, so replacing the whole map here
+		// discarded that env-configured default account whenever
+		// config.toml defined any [claude.accounts.NAME] entry --
+		// including an unrelated named account (roborev finding on kata
+		// 9rs0, filed as kata qs2f). Every named account merges in
+		// normally; "default" specifically merges field by field with
+		// whatever loadEnv() already put there, since loadEnv() running
+		// first means an existing "default" entry at this point can
+		// only have come from the environment, and every other field in
+		// this function has environment variables take precedence over
+		// config.toml. Field-by-field matters because setting only one
+		// of AGENTSVIEW_CLAUDE_ACCOUNT_CREDENTIALS/_CONFIG must not
+		// discard config.toml's value for the *other* field of the same
+		// "default" account -- skipping the whole TOML entry whenever
+		// either env var was set silently dropped it (roborev finding
+		// on kata j5md #2).
+		if c.Claude.Accounts == nil {
+			c.Claude.Accounts = make(map[string]ClaudeAccountConfig, len(file.Claude.Accounts))
+		}
+		for name, acct := range file.Claude.Accounts {
+			if name == "default" {
+				if envAcct, exists := c.Claude.Accounts["default"]; exists {
+					if envAcct.Credentials == "" {
+						envAcct.Credentials = acct.Credentials
+					}
+					if envAcct.ClaudeConfig == "" {
+						envAcct.ClaudeConfig = acct.ClaudeConfig
+					}
+					c.Claude.Accounts["default"] = envAcct
+					continue
+				}
+			}
+			c.Claude.Accounts[name] = acct
+		}
 	}
 	if file.Host != "" {
 		c.Host = file.Host
@@ -1986,6 +2054,27 @@ func (c *Config) loadEnv() {
 		"CURSOR_ADMIN_USER_ID",
 	); v != "" {
 		c.CursorAdminUserID = v
+	}
+	// A "default" Claude account, set entirely from the environment, for
+	// containerized/CI use without a config.toml -- mirroring Claude
+	// Code's own CLAUDE_CODE_OAUTH_TOKEN convention for CI. Config-file
+	// [claude.accounts.NAME] entries are unaffected; this only ever
+	// creates or updates the "default" key.
+	if credentials := os.Getenv("AGENTSVIEW_CLAUDE_ACCOUNT_CREDENTIALS"); credentials != "" {
+		acct := c.Claude.Accounts["default"]
+		acct.Credentials = credentials
+		if c.Claude.Accounts == nil {
+			c.Claude.Accounts = map[string]ClaudeAccountConfig{}
+		}
+		c.Claude.Accounts["default"] = acct
+	}
+	if claudeConfig := os.Getenv("AGENTSVIEW_CLAUDE_ACCOUNT_CONFIG"); claudeConfig != "" {
+		acct := c.Claude.Accounts["default"]
+		acct.ClaudeConfig = claudeConfig
+		if c.Claude.Accounts == nil {
+			c.Claude.Accounts = map[string]ClaudeAccountConfig{}
+		}
+		c.Claude.Accounts["default"] = acct
 	}
 	if v := os.Getenv("AGENTSVIEW_DUCKDB_PATH"); v != "" {
 		c.DuckDB.Path = v

@@ -230,6 +230,69 @@ func TestAttemptRetryAfterHonored(t *testing.T) {
 		"Retry-After is honored exactly, without jitter")
 }
 
+// TestAttemptHeaderlessRetryAfterFallsBackToBackoff covers a roborev
+// finding: a 429 (or similar) with no usable Retry-After header parses to
+// a *RetryAfterError carrying a zero duration (see
+// claude.parseRetryAfter), and treating that as an explicit "retry
+// immediately" instruction skipped exponential backoff entirely, so
+// repeated headerless failures would retry as fast as the scheduler loop
+// allows instead of backing off. A non-positive RetryAfter must fall back
+// to the normal ConsecutiveFailures-driven backoff, the same as any other
+// error.
+func TestAttemptHeaderlessRetryAfterFallsBackToBackoff(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := newFakeClock(base)
+	s := New(nil, WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
+
+	j := &fakeJob{name: "job", interval: 16 * time.Minute, run: func(context.Context) error {
+		return &RetryAfterError{RetryAfter: 0, Err: errors.New("rate limited, no retry-after header")}
+	}}
+	rj := &job{j: j, opts: Options{}, trigger: make(chan chan error, 1)}
+
+	err := s.attempt(context.Background(), rj, false)
+	require.Error(t, err)
+	assert.Equal(t, 1, rj.status.ConsecutiveFailures)
+	assert.Equal(t, base.Add(time.Minute), rj.status.NextRun,
+		"a headerless Retry-After must use the normal backoff delay (interval/16), not an immediate retry")
+}
+
+// TestAttemptWithholdsTriggerDuringPendingRetryAfter covers a roborev
+// finding: TriggerNow's bypassCooldown only bypasses Cooldown, but the
+// prior implementation let it bypass a pending Retry-After wait the same
+// way, so a manual trigger right after an upstream 429 could immediately
+// repeat the same failing request. attempt now checks a pending
+// Retry-After deadline unconditionally, before Cooldown, and returns
+// ErrRetryAfterPending without running the job at all while it holds.
+func TestAttemptWithholdsTriggerDuringPendingRetryAfter(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := newFakeClock(base)
+	s := New(nil, WithClock(clock), withRand(func(time.Duration) time.Duration { return 0 }))
+
+	retryAfter := 90 * time.Second
+	j := &fakeJob{name: "job", interval: time.Hour, run: func(context.Context) error {
+		return &RetryAfterError{RetryAfter: retryAfter, Err: errors.New("rate limited")}
+	}}
+	rj := &job{j: j, opts: Options{}, trigger: make(chan chan error, 1)}
+
+	err := s.attempt(context.Background(), rj, false)
+	require.Error(t, err)
+	require.EqualValues(t, 1, j.calls.Load())
+
+	// A manual trigger (bypassCooldown=true) before the Retry-After wait
+	// elapses must not run the job again.
+	err = s.attempt(context.Background(), rj, true)
+	var pending *ErrRetryAfterPending
+	require.ErrorAs(t, err, &pending)
+	assert.Equal(t, retryAfter, pending.Remaining)
+	assert.EqualValues(t, 1, j.calls.Load(), "the job must not run again while the wait is pending")
+
+	// Once the wait elapses, a trigger runs normally again.
+	clock.Advance(retryAfter)
+	err = s.attempt(context.Background(), rj, true)
+	require.Error(t, err) // the fake job still fails every call
+	assert.EqualValues(t, 2, j.calls.Load(), "the job runs again once the retry-after wait has elapsed")
+}
+
 // TestInitialDelayRecordsNextRunStatus covers a job without RunAtStart:
 // before its first attempt ever runs, Status must already reflect the
 // scheduled next run rather than a zero value for the whole first interval.
@@ -426,6 +489,47 @@ func TestSchedulerStatusPersistenceRoundTrip(t *testing.T) {
 	require.Len(t, statuses, 1)
 	assert.Equal(t, clock.Now(), statuses[0].LastSuccess)
 	assert.Equal(t, base, statuses[0].LastAttempt)
+}
+
+// TestSchedulerRestoresRetryAfterUntilAcrossRestart covers a roborev
+// finding: RetryAfterUntil lived only in an in-memory job field, so
+// restoring persisted Status on a restart (loadStatuses/loadOneStatus)
+// did not restore it, and a TriggerNow call made shortly after that
+// restart -- but still within the original Retry-After wait -- would
+// bypass NextRun and repeat the request anyway. RetryAfterUntil is now a
+// Status field, restored the same way LastAttempt/NextRun already are.
+func TestSchedulerRestoresRetryAfterUntilAcrossRestart(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := newFakeClock(base)
+	store := newMemStore()
+
+	retryAfter := 5 * time.Minute
+	j := &fakeJob{name: "job", interval: time.Hour, run: func(context.Context) error {
+		return &RetryAfterError{RetryAfter: retryAfter, Err: errors.New("rate limited")}
+	}}
+	s := New(store, WithClock(clock))
+	s.Register(j, Options{})
+	s.Start(t.Context())
+
+	err := s.TriggerNow("job")
+	require.Error(t, err)
+	require.EqualValues(t, 1, j.calls.Load())
+
+	// Restart: a fresh Scheduler backed by the same store, well within
+	// the original Retry-After wait.
+	clock.Advance(time.Minute)
+	j2 := &fakeJob{name: "job", interval: time.Hour, run: func(context.Context) error {
+		return &RetryAfterError{RetryAfter: retryAfter, Err: errors.New("rate limited")}
+	}}
+	s2 := New(store, WithClock(clock))
+	s2.Register(j2, Options{})
+	s2.Start(t.Context())
+
+	err = s2.TriggerNow("job")
+	var pending *ErrRetryAfterPending
+	require.ErrorAs(t, err, &pending)
+	assert.EqualValues(t, 0, j2.calls.Load(),
+		"a restored Retry-After deadline must block TriggerNow across a restart")
 }
 
 func TestErrUnknownJobBeforeStart(t *testing.T) {

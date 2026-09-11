@@ -5,7 +5,12 @@
     rateLimits,
     type RateLimitWindow,
   } from "../../stores/ratelimits.svelte.js";
-  import { formatResetCountdown, formatWindowLength } from "../../utils/rateLimitFormat.js";
+  import {
+    formatCreditsBalance,
+    formatResetCountdown,
+    formatWindowLength,
+  } from "../../utils/rateLimitFormat.js";
+  import { formatMoney, moneyFromMicrodollars, type Money } from "../../money.js";
   import RateLimitHistoryChart from "./RateLimitHistoryChart.svelte";
 
   interface Props {
@@ -15,6 +20,111 @@
   }
 
   let { window: snapshot, since, until }: Props = $props();
+
+  const accountId = $derived(snapshot.accountId ?? "");
+  const limitId = $derived(snapshot.limitId ?? "");
+  const isClaude = $derived(snapshot.vendor === "claude");
+
+  /** Derives the vendor-neutral window-label part of a card's title
+   * ("Session limit", "Weekly limit", ...) so both vendors render
+   * through the same message keys instead of Codex showing its raw
+   * "primary"/"secondary" slot names or Claude showing its raw
+   * window_kind (kata k5bm, resolving kata j5md #1's window-kind
+   * normalization finding too).
+   *
+   * A handful of Claude-only window kinds (the fixed-bucket fallback's
+   * seven_day_opus/seven_day_sonnet/seven_day_oauth_apps/seven_day_
+   * overage_included, and extra_usage_monthly, a $-denominated window
+   * with no minutes at all) keep their own dedicated labels; every other
+   * window -- both vendors' -- is labeled from windowMinutes: 300 is the
+   * "Session limit" key Claude Code itself uses for its 5-hour window,
+   * 10080 is the "Weekly limit" key, and any other length falls back to
+   * a generic "{duration} limit" key. windowKind's ":<scope label>"
+   * suffix (e.g. "weekly_scoped:Fable") never affects the label -- the
+   * scope becomes the badge shown alongside it instead, mirroring how
+   * Codex's limitName becomes the badge for a model-specific bucket.
+   */
+  function windowLabelFor(windowKind: string, windowMinutes: number | undefined): string {
+    const baseKind = windowKind.split(":")[0];
+    switch (baseKind) {
+      case "seven_day_opus":
+        return m.rate_limits_claude_window_seven_day_opus();
+      case "seven_day_sonnet":
+        return m.rate_limits_claude_window_seven_day_sonnet();
+      case "seven_day_oauth_apps":
+        return m.rate_limits_claude_window_seven_day_oauth_apps();
+      case "seven_day_overage_included":
+        return m.rate_limits_claude_window_seven_day_overage_included();
+      case "extra_usage_monthly":
+        return m.rate_limits_extra_usage_monthly_label();
+      // Claude's own shared window_kind identity is authoritative even
+      // when windowMinutes is missing or still zero (a statusline or
+      // fixed-bucket observation predating the ingestion fix for this,
+      // or a not-yet-migrated row): falling through to the
+      // windowMinutes-based mapping below would otherwise show a
+      // duration-less generic "— limit" title, and that title would
+      // flip depending on which source most recently wrote the row
+      // (roborev finding on kata ztf4). Codex's own kinds
+      // ("primary"/"secondary") have no case here and fall through to
+      // windowMinutes as before.
+      case "session":
+        return m.rate_limits_claude_window_five_hour();
+      case "weekly":
+        return m.rate_limits_claude_window_seven_day();
+    }
+    if (windowMinutes === 300) return m.rate_limits_claude_window_five_hour();
+    if (windowMinutes === 10080) return m.rate_limits_claude_window_seven_day();
+    // Codex's own two kinds ("primary"/"secondary") are slot names, not
+    // fixed durations -- window_minutes is what actually determines
+    // session vs. weekly, and either slot can carry either length (a
+    // fixture elsewhere in this codebase pairs "primary" with a
+    // 10080-minute window on purpose). An observation from before
+    // window_minutes was always populated carries no duration at all,
+    // so a missing value here falls through to the generic
+    // "{duration} limit" title below rather than guessing a specific
+    // one from the slot name (roborev finding): formatWindowLength
+    // renders an unknown duration as "—", giving a neutral "— limit"
+    // rather than a possibly-wrong "Session limit"/"Weekly limit".
+    return m.rate_limits_window_generic_label({ duration: formatWindowLength(windowMinutes ?? 0) });
+  }
+
+  const windowLabel = $derived(windowLabelFor(snapshot.windowKind, snapshot.windowMinutes));
+
+  /** The qualifier badge next to the window label -- Claude's model/
+   * surface scope (e.g. "Fable" for a weekly_scoped:Fable window) or
+   * Codex's limit_name (e.g. "GPT-5.3-Codex-Spark" for the
+   * codex_bengalfox bucket). Empty for an account-wide Claude window or
+   * Codex's general "codex" bucket, both of which render with no badge
+   * at all. Falls back to Codex's raw limit_id (e.g. "codex_bengalfox")
+   * for a model-specific bucket that has not been given a display name
+   * yet, so distinct buckets stay visually distinguishable instead of
+   * showing identical "Session limit"/"Weekly limit" headings with no
+   * badge at all (roborev finding); the general "codex" id itself is
+   * still suppressed rather than shown as a badge. This is vendor DATA,
+   * passed through untranslated. */
+  const scopeBadge = $derived(
+    isClaude
+      ? (snapshot.scopeLabel ?? "")
+      : snapshot.limitName || (limitId && limitId !== "codex" ? limitId : ""),
+  );
+
+  const isExtraUsage = $derived(snapshot.windowKind === "extra_usage_monthly");
+
+  /** Extracts the extra_usage_monthly window's monetary limit from its
+   * `details` JSON (monthly_limit_minor + exponent, currency), for the
+   * "96% of $1,100" summary. Returns null when details is absent or
+   * missing the fields this window is expected to carry. */
+  function extraUsageLimitMoney(details: unknown): Money | null {
+    if (!details || typeof details !== "object") return null;
+    const raw = details as Record<string, unknown>;
+    const minor = raw.monthly_limit_minor;
+    const exponent = raw.exponent;
+    if (typeof minor !== "number" || typeof exponent !== "number") return null;
+    const dollars = minor / 10 ** exponent;
+    return moneyFromMicrodollars(Math.round(dollars * 1_000_000));
+  }
+
+  const extraUsageLimit = $derived(isExtraUsage ? extraUsageLimitMoney(snapshot.details) : null);
 
   let now = $state(Date.now());
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -30,19 +140,20 @@
 
   const identity = $derived({
     vendor: snapshot.vendor,
-    accountId: snapshot.accountId ?? "",
+    accountId,
     machine: snapshot.machine ?? "",
-    limitId: snapshot.limitId ?? "",
+    limitId,
     windowKind: snapshot.windowKind,
   });
 
   $effect(() => {
-    // Re-fetch this card's history when its full identity (machine,
-    // limit id, window kind) or the selected date range changes,
-    // and also whenever current snapshots refresh (mount, the Usage
-    // page's manual refresh, or its periodic auto-refresh) so the chart
-    // picks up newly synced observations instead of only the card's own
-    // used-percent/credits fields updating.
+    // Re-fetch this card's history when its full identity (vendor,
+    // account, machine, limit id, window kind) or the selected date
+    // range changes, and also whenever current snapshots refresh
+    // (mount, the Usage page's manual refresh, or its periodic
+    // auto-refresh) so the chart picks up newly synced observations
+    // instead of only the card's own used-percent/credits fields
+    // updating.
     const id = identity;
     void rateLimits.refreshToken;
     void since;
@@ -80,40 +191,17 @@
   );
 
   const history = $derived(rateLimits.historyFor(identity));
-
-  // Window label composed via Paraglide like the other rate-limit labels
-  // (rate_limits_resets_in, etc.): a 7-day (10080-minute) window reads as
-  // "Weekly limit" the way Codex's own UI describes it; any other known
-  // length falls back to a generic "{duration} limit". windowMinutes is
-  // omitted from the API response when Codex never reported a duration
-  // for this window (see ServiceRateLimitWindow.windowMinutes) -- that
-  // case falls back to a window-kind label ("Session limit" for
-  // "primary", "Weekly limit" for "secondary") instead of a generic
-  // "{duration} limit" with a placeholder "—" duration. limit_name is the
-  // vendor-reported, human-readable name (e.g. "GPT-5.3-Codex-Spark");
-  // limit_id (a slot name like "codex") is the fallback for older/partial
-  // snapshots that never carried a name.
-  const windowLabel = $derived(
-    snapshot.windowMinutes === undefined
-      ? snapshot.windowKind === "primary"
-        ? m.rate_limits_window_session()
-        : m.rate_limits_window_weekly()
-      : snapshot.windowMinutes === 10080
-        ? m.rate_limits_window_weekly()
-        : m.rate_limits_window_generic({ duration: formatWindowLength(snapshot.windowMinutes) }),
-  );
-  const cardHeader = $derived(
-    m.rate_limits_card_header({
-      window: windowLabel,
-      name: snapshot.limitName || snapshot.limitId,
-    }),
-  );
 </script>
 
 <div class="rate-limit-card">
   <div class="card-header">
-    <span class="limit-id">{cardHeader}</span>
-    <span class="window-length">{formatWindowLength(snapshot.windowMinutes)}</span>
+    <span class="window-label">{windowLabel}</span>
+    {#if scopeBadge}
+      <span class="scope-badge">{scopeBadge}</span>
+    {/if}
+    {#if snapshot.windowMinutes}
+      <span class="window-length">{formatWindowLength(snapshot.windowMinutes)}</span>
+    {/if}
   </div>
 
   <div
@@ -131,9 +219,18 @@
     ></div>
   </div>
   <div class="progress-stats">
-    <span class="used-percent" style:color={barColor}>
-      {usedPercent.toLocaleString(undefined, { maximumFractionDigits: 1 })}%
-    </span>
+    {#if isExtraUsage && extraUsageLimit}
+      <span class="used-percent" style:color={barColor}>
+        {m.rate_limits_extra_usage_summary({
+          percent: usedPercent.toLocaleString(undefined, { maximumFractionDigits: 1 }),
+          limit: formatMoney(extraUsageLimit),
+        })}
+      </span>
+    {:else}
+      <span class="used-percent" style:color={barColor}>
+        {usedPercent.toLocaleString(undefined, { maximumFractionDigits: 1 })}%
+      </span>
+    {/if}
     <span class="resets" title={resetAbsolute}>
       {#if !hasKnownReset}
         {m.rate_limits_resets_unknown()}
@@ -155,10 +252,10 @@
     {#if snapshot.creditsHas}
       <span class="meta-item">
         <span class="meta-label">{m.rate_limits_credits_label()}</span>
-        <span class="meta-value">
+        <span class="meta-value" title={snapshot.creditsBalance}>
           {snapshot.creditsUnlimited
             ? m.rate_limits_credits_unlimited()
-            : snapshot.creditsBalance}
+            : formatCreditsBalance(snapshot.creditsBalance ?? "")}
         </span>
       </span>
     {/if}
@@ -190,14 +287,23 @@
     font-size: 12px;
   }
 
-  .limit-id {
+  .window-label {
     font-weight: 600;
     color: var(--text-primary);
-    font-family: var(--font-mono, monospace);
+  }
+
+  .scope-badge {
+    color: var(--text-secondary);
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm, 4px);
+    background: var(--bg-inset);
+    border: 1px solid var(--border-muted);
   }
 
   .window-length {
     color: var(--text-secondary);
+    margin-left: auto;
   }
 
   .progress-track {
