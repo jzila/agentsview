@@ -28,6 +28,9 @@ func pricingRefreshJob(database *db.DB, runner pricingRefreshExclusiveRunner) po
 		RunAtStart: true,
 		Run: func(ctx context.Context) error {
 			return runPricingExclusive(runner, func() error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				return pricingrefresh.RefreshCurrent(ctx, database)
 			})
 		},
