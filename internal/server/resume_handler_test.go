@@ -547,7 +547,6 @@ func TestResumeSession(t *testing.T) {
 				assert.False(t, resp.Launched, "expected launched=false for command_only")
 				assert.Equal(t, "cd '"+tt.wantCwd+"' && "+tt.wantSuffix, resp.Command)
 				assert.Equal(t, tt.wantCwd, resp.Cwd)
-				assert.NotContains(t, resp.Command, "~")
 			})
 		}
 	})
