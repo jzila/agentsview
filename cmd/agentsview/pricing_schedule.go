@@ -27,6 +27,8 @@ func pricingRefreshJob(database *db.DB, runner pricingRefreshExclusiveRunner) po
 		Cooldown:   pricingrefresh.RefreshCooldown,
 		RunAtStart: true,
 		Run: func(ctx context.Context) error {
+			// RunExclusive cannot cancel its sync/resync lock wait, so shutdown
+			// waits for the lock before this job can observe cancellation.
 			return runPricingExclusive(runner, func() error {
 				if err := ctx.Err(); err != nil {
 					return err

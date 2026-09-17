@@ -23,6 +23,7 @@ type Job struct {
 }
 
 // RetryAfterError overrides the next attempt's backoff and jitter.
+// Scheduled attempts still honor the job's cooldown.
 type RetryAfterError struct {
 	RetryAfter time.Duration
 	Err        error
@@ -38,12 +39,12 @@ func (e *RetryAfterError) Error() string {
 func (e *RetryAfterError) Unwrap() error { return e.Err }
 
 type Status struct {
-	Name                string    `json:"name"`
-	LastAttempt         time.Time `json:"last_attempt,omitzero"`
-	LastSuccess         time.Time `json:"last_success,omitzero"`
-	LastError           string    `json:"last_error,omitempty"`
-	ConsecutiveFailures int       `json:"consecutive_failures"`
-	NextRun             time.Time `json:"next_run,omitzero"`
+	Name                string
+	LastAttempt         time.Time
+	LastSuccess         time.Time
+	LastError           string
+	ConsecutiveFailures int
+	NextRun             time.Time
 }
 
 type job struct {
